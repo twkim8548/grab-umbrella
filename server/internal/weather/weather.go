@@ -1,50 +1,178 @@
 // Package weather 는 기상청 단기예보 조회서비스 클라이언트다. spec §4.
 //
 // 원칙: 멀리 보는 건 단기예보(getVilageFcst, 메인),
-//       임박한 건 초단기예보(getUltraSrtFcst, 푸시).
+//
+//	임박한 건 초단기예보(getUltraSrtFcst, 푸시).
 package weather
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
+)
 
-// Client 는 기상청 API 호출 + 캐싱 + 폴백을 담당한다.
+// Client 는 기상청 API 호출을 담당한다.
 type Client struct {
 	serviceKey string
 	baseURL    string
-	// TODO: 캐시(같은 격자·같은 발표본 1회만 조회, spec §4.6),
-	//       httpClient(타임아웃·재시도), 폴백(초단기 실패 시 단기예보).
+	httpClient *http.Client
+	// TODO(다음 단계): 캐시(같은 격자·같은 발표본 1회만 조회, spec §4.6), 폴백.
 }
 
 func New(serviceKey, baseURL string) *Client {
-	return &Client{serviceKey: serviceKey, baseURL: baseURL}
+	return &Client{
+		serviceKey: serviceKey,
+		baseURL:    baseURL,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// vilageNumOfRows 는 한 번에 받을 항목 수다. 단기예보는 글피까지 시간대×카테고리라
+// 항목이 많으므로 충분히 크게 잡아 페이지네이션 없이 전부 받는다.
+const vilageNumOfRows = 1000
+
+// FcstItem 은 기상청 응답의 개별 예보 항목(1행)이다.
+type FcstItem struct {
+	BaseDate  string `json:"baseDate"`
+	BaseTime  string `json:"baseTime"`
+	Category  string `json:"category"`
+	FcstDate  string `json:"fcstDate"`
+	FcstTime  string `json:"fcstTime"`
+	FcstValue string `json:"fcstValue"`
+	Nx        int    `json:"nx"`
+	Ny        int    `json:"ny"`
+}
+
+// kmaResponse 는 getVilageFcst 응답 구조다. response.body.items.item[].
+type kmaResponse struct {
+	Response struct {
+		Header struct {
+			ResultCode string `json:"resultCode"`
+			ResultMsg  string `json:"resultMsg"`
+		} `json:"header"`
+		Body struct {
+			Items struct {
+				Item []FcstItem `json:"item"`
+			} `json:"items"`
+		} `json:"body"`
+	} `json:"response"`
+}
+
+// VilageForecast (단기예보) — getVilageFcst 를 호출해 해당 격자의 모든 예보 항목을
+// 파싱해 반환한다. base_date/base_time 은 BaseTime 으로 안전 마진을 두고 산출한다.
+// spec §4. 가공/슬라이스/캐싱은 다음 단계.
+func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, error) {
+	baseDate, baseTime := BaseTime(time.Now())
+
+	q := url.Values{}
+	q.Set("serviceKey", c.serviceKey)
+	q.Set("dataType", "JSON")
+	q.Set("numOfRows", strconv.Itoa(vilageNumOfRows))
+	q.Set("pageNo", "1")
+	q.Set("base_date", baseDate)
+	q.Set("base_time", baseTime)
+	q.Set("nx", strconv.Itoa(nx))
+	q.Set("ny", strconv.Itoa(ny))
+
+	endpoint := c.baseURL + "/getVilageFcst?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("weather: build request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("weather: http do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("weather: http status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("weather: read body: %w", err)
+	}
+
+	return parseVilageFcst(body)
+}
+
+// parseVilageFcst 는 getVilageFcst 응답 본문을 파싱한다. resultCode 가 "00"이 아니면
+// 에러를 반환한다(헤더의 resultCode/resultMsg 사용).
+func parseVilageFcst(body []byte) ([]FcstItem, error) {
+	var r kmaResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("weather: parse json: %w", err)
+	}
+	if r.Response.Header.ResultCode != "00" {
+		return nil, fmt.Errorf("weather: api error %s: %s",
+			r.Response.Header.ResultCode, r.Response.Header.ResultMsg)
+	}
+	return r.Response.Body.Items.Item, nil
 }
 
 // SlotForecast 는 한 시점(출근 또는 퇴근)의 가공된 예보다.
 type SlotForecast struct {
-	SkyText   string // 맑음/구름많음/흐림 (SKY)
-	PtyText   string // 없음/비/비눈/눈/소나기 (PTY)
-	TempC     int    // 기온 (T1H 또는 TMP)
-	PopPct    int    // 강수확률 (POP) — spec §4.4: v1에 없던 핵심 추가
+	SkyText      string // 맑음/구름많음/흐림 (SKY)
+	PtyText      string // 없음/비/비눈/눈/소나기 (PTY)
+	TempC        int    // 기온 (단기예보는 TMP)
+	PopPct       int    // 강수확률 (POP) — spec §4.4
 	NeedUmbrella bool
-	// TODO: 어제 대비 체감, 시간별 흐름(점진적 공개용 슬라이스) 등
+	// TODO(다음 단계): 어제 대비 체감, 시간별 흐름(점진적 공개용 슬라이스) 등.
 }
 
-// VilageForecast (단기예보) — 메인 화면용. spec §3 GET /forecast.
-// base_time 안전 마진은 spec §4.5 참고 (정각 아닌 직전 발표본 사용).
-func (c *Client) VilageForecast(ctx context.Context, nx, ny int, hhmm string) (*SlotForecast, error) {
-	// TODO: getVilageFcst 호출 → POP/PTY/SKY/WSD/TMN/TMX 파싱 → SlotForecast
+// SlotForecast 는 파싱된 항목들에서 특정 시각(fcstDate="YYYYMMDD", fcstTime="HHmm")의
+// 예보를 골라 SlotForecast 로 정리한다. 단기예보 메인이므로 기온은 TMP 를 쓴다.
+func SlotForecastAt(items []FcstItem, fcstDate, fcstTime string) (SlotForecast, bool) {
+	byCategory := map[string]string{}
+	found := false
+	for _, it := range items {
+		if it.FcstDate == fcstDate && it.FcstTime == fcstTime {
+			byCategory[it.Category] = it.FcstValue
+			found = true
+		}
+	}
+	if !found {
+		return SlotForecast{}, false
+	}
+
+	sky := atoiDefault(byCategory["SKY"], 0)
+	pty := atoiDefault(byCategory["PTY"], 0)
+	pop := atoiDefault(byCategory["POP"], 0)
+	temp := atoiDefault(byCategory["TMP"], 0)
+
+	return SlotForecast{
+		SkyText:      skyText(sky),
+		PtyText:      ptyText(pty),
+		TempC:        temp,
+		PopPct:       pop,
+		NeedUmbrella: NeedUmbrella(pty, pop),
+	}, true
+}
+
+// atoiDefault 는 문자열을 정수로 변환하되 실패하면 def 를 반환한다.
+// 기상청 일부 값은 "강수없음" 등 비수치 문자열일 수 있으므로 안전하게 처리한다.
+func atoiDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// UltraSrtForecast (초단기예보) — 푸시용. 이번 단계 범위 아님. 컴파일 유지를 위한 스텁.
+func (c *Client) UltraSrtForecast(ctx context.Context, nx, ny int) ([]FcstItem, error) {
 	return nil, errNotImplemented
-}
-
-// UltraSrtForecast (초단기예보) — 푸시용. +6시간, 1시간 단위.
-func (c *Client) UltraSrtForecast(ctx context.Context, nx, ny int, hhmm string) (*SlotForecast, error) {
-	// TODO: getUltraSrtFcst 호출 → T1H/PTY/SKY/RN1 파싱
-	return nil, errNotImplemented
-}
-
-// BaseTime 은 안전 마진을 둔 직전 발표본의 base_date/base_time 을 계산한다. spec §4.5.
-// TODO: v1 stores/weather.ts 로직 포팅 + 45분 마진 보강.
-func BaseTime(/* now time.Time, kind FcstKind */) (baseDate, baseTime string) {
-	return "", ""
 }
 
 type sentinelError string
