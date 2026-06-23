@@ -13,37 +13,44 @@ import (
 // 만료: 발표본이 바뀌면 캐시키가 바뀌어 자연 무효화된다(TTL 불필요). 다만 오래된 발표본
 // 키가 누적되어 메모리가 무한 증가하는 것을 막기 위해, 새 발표본이 들어오면 그 격자의
 // 이전 발표본 항목들을 정리한다(격자당 최신 발표본 1개만 유지).
+// 예보 종류(kind). 단기예보와 초단기예보는 같은 격자라도 발표본·카테고리가 다르므로
+// 캐시키를 반드시 구분해야 한다(spec §4.6).
+const (
+	kindVilage = "vilage"
+	kindUltra  = "ultra"
+)
+
 type forecastCache struct {
 	mu      sync.Mutex
-	entries map[string][]FcstItem // key = "nx:ny:baseDate:baseTime"
+	entries map[string][]FcstItem // key = "kind:nx:ny:baseDate:baseTime"
 }
 
 func newForecastCache() *forecastCache {
 	return &forecastCache{entries: make(map[string][]FcstItem)}
 }
 
-// cacheKey 는 격자·발표본을 캐시키로 합성한다.
-func cacheKey(nx, ny int, baseDate, baseTime string) string {
-	return strconv.Itoa(nx) + ":" + strconv.Itoa(ny) + ":" + baseDate + ":" + baseTime
+// cacheKey 는 종류·격자·발표본을 캐시키로 합성한다.
+func cacheKey(kind string, nx, ny int, baseDate, baseTime string) string {
+	return kind + ":" + strconv.Itoa(nx) + ":" + strconv.Itoa(ny) + ":" + baseDate + ":" + baseTime
 }
 
-// gridPrefix 는 한 격자의 모든 발표본 키 공통 접두사다("nx:ny:").
-func gridPrefix(nx, ny int) string {
-	return strconv.Itoa(nx) + ":" + strconv.Itoa(ny) + ":"
+// gridPrefix 는 한 종류·격자의 모든 발표본 키 공통 접두사다("kind:nx:ny:").
+func gridPrefix(kind string, nx, ny int) string {
+	return kind + ":" + strconv.Itoa(nx) + ":" + strconv.Itoa(ny) + ":"
 }
 
 // get 은 캐시 적중 시 항목과 true 를 반환한다.
-func (c *forecastCache) get(nx, ny int, baseDate, baseTime string) ([]FcstItem, bool) {
+func (c *forecastCache) get(kind string, nx, ny int, baseDate, baseTime string) ([]FcstItem, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	items, ok := c.entries[cacheKey(nx, ny, baseDate, baseTime)]
+	items, ok := c.entries[cacheKey(kind, nx, ny, baseDate, baseTime)]
 	return items, ok
 }
 
-// put 은 항목을 저장하고, 같은 격자의 다른(오래된) 발표본 키를 제거한다.
-func (c *forecastCache) put(nx, ny int, baseDate, baseTime string, items []FcstItem) {
-	key := cacheKey(nx, ny, baseDate, baseTime)
-	prefix := gridPrefix(nx, ny)
+// put 은 항목을 저장하고, 같은 종류·격자의 다른(오래된) 발표본 키를 제거한다.
+func (c *forecastCache) put(kind string, nx, ny int, baseDate, baseTime string, items []FcstItem) {
+	key := cacheKey(kind, nx, ny, baseDate, baseTime)
+	prefix := gridPrefix(kind, nx, ny)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

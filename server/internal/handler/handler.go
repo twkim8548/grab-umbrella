@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -112,32 +113,53 @@ func (h *Handler) Forecast(w http.ResponseWriter, r *http.Request) {
 	mDate, mTime := weather.SlotDateTime(now, dev.CommuteStart)
 	eDate, eTime := weather.SlotDateTime(now, dev.CommuteEnd)
 
-	// 집 격자 = 출근 카드, 회사 격자 = 퇴근 카드. 같은 격자면 캐시로 호출 공유된다.
-	homeItems, err := h.Weather.VilageForecast(r.Context(), dev.HomeNx, dev.HomeNy)
-	if err != nil {
-		log.Printf("forecast: VilageForecast(home %d,%d): %v", dev.HomeNx, dev.HomeNy, err)
-		http.Error(w, "weather upstream failed", http.StatusBadGateway)
-		return
-	}
-	workItems, err := h.Weather.VilageForecast(r.Context(), dev.WorkNx, dev.WorkNy)
-	if err != nil {
-		log.Printf("forecast: VilageForecast(work %d,%d): %v", dev.WorkNx, dev.WorkNy, err)
-		http.Error(w, "weather upstream failed", http.StatusBadGateway)
-		return
-	}
-
 	mBefore, mAfter := weather.MorningWindow()
 	eBefore, eAfter := weather.EveningWindow()
 
+	// 집 격자 = 출근 카드, 회사 격자 = 퇴근 카드. 같은 격자면 weather 내부 캐시로 호출 공유.
 	var resp forecastResponse
-	if card, ok := weather.BuildSlotCard(homeItems, mDate, mTime, mBefore, mAfter); ok {
+	if card, ok := h.buildSlotCard(r.Context(), now, "morning", dev.HomeNx, dev.HomeNy, mDate, mTime, mBefore, mAfter); ok {
 		resp.Morning = &card
 	}
-	if card, ok := weather.BuildSlotCard(workItems, eDate, eTime, eBefore, eAfter); ok {
+	if card, ok := h.buildSlotCard(r.Context(), now, "evening", dev.WorkNx, dev.WorkNy, eDate, eTime, eBefore, eAfter); ok {
 		resp.Evening = &card
 	}
 
 	writeJSON(w, resp)
+}
+
+// buildSlotCard 는 한 슬롯의 예보 소스를 시점에 따라 자동 선택해 카드를 만든다(spec §4.1).
+//
+// 선택 규칙:
+//  1. 슬롯 시각이 지금부터 6시간 이내면 초단기예보(getUltraSrtFcst)를 우선 시도.
+//  2. 초단기 호출 실패, 또는 해당 시각 슬롯이 비면 → 단기예보(getVilageFcst)로 폴백.
+//  3. 6시간 밖이면 처음부터 단기예보.
+//
+// 단기예보까지 실패하면 ok=false 를 반환해 호출부가 해당 카드를 null 로 graceful 하게
+// 내린다(spec §4.6·§9-2). 카드와 hourly 는 같은 소스 기준으로 슬라이스된다.
+func (h *Handler) buildSlotCard(ctx context.Context, now time.Time, slot string, nx, ny int, fcstDate, fcstTime string, before, after int) (weather.SlotCard, bool) {
+	if weather.WithinUltraRange(now, fcstDate, fcstTime) {
+		items, err := h.Weather.UltraSrtForecast(ctx, nx, ny)
+		if err != nil {
+			log.Printf("forecast: %s ultra(%d,%d) failed, falling back to vilage: %v", slot, nx, ny, err)
+		} else if card, ok := weather.BuildSlotCard(items, fcstDate, fcstTime, before, after); ok {
+			log.Printf("forecast: %s using ultra-short forecast (%d,%d @ %s)", slot, nx, ny, fcstTime)
+			return card, true
+		} else {
+			log.Printf("forecast: %s ultra(%d,%d) no slot @ %s, falling back to vilage", slot, nx, ny, fcstTime)
+		}
+	}
+
+	items, err := h.Weather.VilageForecast(ctx, nx, ny)
+	if err != nil {
+		log.Printf("forecast: %s vilage(%d,%d) failed: %v", slot, nx, ny, err)
+		return weather.SlotCard{}, false
+	}
+	card, ok := weather.BuildSlotCard(items, fcstDate, fcstTime, before, after)
+	if ok {
+		log.Printf("forecast: %s using village (short-term) forecast (%d,%d @ %s)", slot, nx, ny, fcstTime)
+	}
+	return card, ok
 }
 
 // ForecastNow 는 GET /forecast/now (선택). 초단기실황 "지금 바깥". spec §3.

@@ -71,6 +71,57 @@ func TestSlotDateTimeNonKST(t *testing.T) {
 	}
 }
 
+func TestWithinUltraRange(t *testing.T) {
+	now := time.Date(2026, 6, 23, 15, 0, 0, 0, kst)
+	cases := []struct {
+		name     string
+		fcstDate string
+		fcstTime string
+		want     bool
+	}{
+		// 같은 시각(0시간 차) → 범위 내.
+		{"now exactly", "20260623", "1500", true},
+		// +1시간 → 범위 내.
+		{"plus 1h", "20260623", "1600", true},
+		// 정확히 +6시간 경계(<=) → 범위 내.
+		{"plus 6h boundary", "20260623", "2100", true},
+		// +7시간 → 범위 밖.
+		{"plus 7h", "20260623", "2200", false},
+		// 과거(-1시간) → 범위 밖.
+		{"past", "20260623", "1400", false},
+		// 자정 넘김 +6시간 이내 검증: now 21:00, slot 익일 02:00(=+5h) → 범위 내.
+		{"midnight cross in range", "20260624", "0200", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := WithinUltraRange(now, tc.fcstDate, tc.fcstTime); got != tc.want {
+				t.Errorf("WithinUltraRange(15:00, %s %s) = %v; want %v",
+					tc.fcstDate, tc.fcstTime, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWithinUltraRangeMidnightCross(t *testing.T) {
+	// now 21:00, slot 익일 02:00 = +5시간 → 범위 내(자정 경계 처리).
+	now := time.Date(2026, 6, 23, 21, 0, 0, 0, kst)
+	if !WithinUltraRange(now, "20260624", "0200") {
+		t.Error("expected +5h across midnight to be within ultra range")
+	}
+	// now 21:00, slot 익일 0400 = +7시간 → 범위 밖.
+	if WithinUltraRange(now, "20260624", "0400") {
+		t.Error("expected +7h across midnight to be outside ultra range")
+	}
+}
+
+func TestWithinUltraRangeNonKST(t *testing.T) {
+	// 2026-06-23 06:00 UTC == 15:00 KST. slot 1600 KST = +1h → 범위 내.
+	utc := time.Date(2026, 6, 23, 6, 0, 0, 0, time.UTC)
+	if !WithinUltraRange(utc, "20260623", "1600") {
+		t.Error("expected UTC input converted to KST to be within range")
+	}
+}
+
 // hourlyItems 는 0600~2200 정시별 TMP/POP/PTY 를 채운 두 날짜 데이터다(슬라이스 윈도우 검증용).
 func hourlyItems() []FcstItem {
 	var items []FcstItem

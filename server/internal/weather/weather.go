@@ -37,6 +37,10 @@ func New(serviceKey, baseURL string) *Client {
 // 항목이 많으므로 충분히 크게 잡아 페이지네이션 없이 전부 받는다.
 const vilageNumOfRows = 1000
 
+// ultraSrtNumOfRows 는 초단기예보 한 번에 받을 항목 수다. 초단기예보는 +6시간(시간당
+// ~11개 카테고리)이라 항목이 적으므로 단기예보보다 작게 잡아도 전부 받는다.
+const ultraSrtNumOfRows = 300
+
 // FcstItem 은 기상청 응답의 개별 예보 항목(1행)이다.
 type FcstItem struct {
 	BaseDate  string `json:"baseDate"`
@@ -72,7 +76,7 @@ func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, er
 
 	// 캐시 적중: 같은 격자·같은 발표본은 재호출 없이 공유한다(spec §4.6).
 	if c.cache != nil {
-		if items, ok := c.cache.get(nx, ny, baseDate, baseTime); ok {
+		if items, ok := c.cache.get(kindVilage, nx, ny, baseDate, baseTime); ok {
 			return items, nil
 		}
 	}
@@ -99,7 +103,7 @@ func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, er
 		return nil, err
 	}
 	if c.cache != nil {
-		c.cache.put(nx, ny, baseDate, baseTime, items)
+		c.cache.put(kindVilage, nx, ny, baseDate, baseTime, items)
 	}
 	return items, nil
 }
@@ -179,7 +183,8 @@ type SlotForecast struct {
 }
 
 // SlotForecast 는 파싱된 항목들에서 특정 시각(fcstDate="YYYYMMDD", fcstTime="HHmm")의
-// 예보를 골라 SlotForecast 로 정리한다. 단기예보 메인이므로 기온은 TMP 를 쓴다.
+// 예보를 골라 SlotForecast 로 정리한다. 단기/초단기 items 를 모두 처리하기 위해 기온은
+// TMP(단기) 우선, 없으면 T1H(초단기)로 폴백한다. POP/PTY/SKY 코드명은 양쪽 동일하다.
 func SlotForecastAt(items []FcstItem, fcstDate, fcstTime string) (SlotForecast, bool) {
 	byCategory := map[string]string{}
 	found := false
@@ -196,7 +201,7 @@ func SlotForecastAt(items []FcstItem, fcstDate, fcstTime string) (SlotForecast, 
 	sky := atoiDefault(byCategory["SKY"], 0)
 	pty := atoiDefault(byCategory["PTY"], 0)
 	pop := atoiDefault(byCategory["POP"], 0)
-	temp := atoiDefault(byCategory["TMP"], 0)
+	temp := tempC(byCategory)
 
 	return SlotForecast{
 		SkyText:      skyText(sky),
@@ -205,6 +210,15 @@ func SlotForecastAt(items []FcstItem, fcstDate, fcstTime string) (SlotForecast, 
 		PopPct:       pop,
 		NeedUmbrella: NeedUmbrella(pty, pop),
 	}, true
+}
+
+// tempC 는 한 시각의 카테고리 맵에서 기온(°C)을 뽑는다. 단기예보는 TMP, 초단기예보는 T1H
+// 코드를 쓰므로, TMP 우선·없으면 T1H 폴백으로 양쪽 items 를 모두 처리한다. 둘 다 없으면 0.
+func tempC(byCategory map[string]string) int {
+	if v, ok := byCategory["TMP"]; ok {
+		return atoiDefault(v, 0)
+	}
+	return atoiDefault(byCategory["T1H"], 0)
 }
 
 // atoiDefault 는 문자열을 정수로 변환하되 실패하면 def 를 반환한다.
@@ -220,13 +234,42 @@ func atoiDefault(s string, def int) int {
 	return n
 }
 
-// UltraSrtForecast (초단기예보) — 푸시용. 이번 단계 범위 아님. 컴파일 유지를 위한 스텁.
+// UltraSrtForecast (초단기예보) — getUltraSrtFcst 를 호출해 해당 격자의 예보 항목을 파싱해
+// 반환한다. 예보 범위는 발표시점부터 +6시간. base_date/base_time 은 UltraSrtBaseTime 으로
+// 안전 마진(매시 45분 제공)을 두고 산출한다. 응답 구조는 단기예보와 동일하므로
+// parseVilageFcst 를 재사용한다. 캐시는 단기예보와 종류(kind)로 구분한다(spec §4.6).
 func (c *Client) UltraSrtForecast(ctx context.Context, nx, ny int) ([]FcstItem, error) {
-	return nil, errNotImplemented
+	baseDate, baseTime := UltraSrtBaseTime(time.Now())
+
+	if c.cache != nil {
+		if items, ok := c.cache.get(kindUltra, nx, ny, baseDate, baseTime); ok {
+			return items, nil
+		}
+	}
+
+	q := url.Values{}
+	q.Set("serviceKey", c.serviceKey)
+	q.Set("dataType", "JSON")
+	q.Set("numOfRows", strconv.Itoa(ultraSrtNumOfRows))
+	q.Set("pageNo", "1")
+	q.Set("base_date", baseDate)
+	q.Set("base_time", baseTime)
+	q.Set("nx", strconv.Itoa(nx))
+	q.Set("ny", strconv.Itoa(ny))
+
+	endpoint := c.baseURL + "/getUltraSrtFcst?" + q.Encode()
+
+	body, err := c.getWithRetry(ctx, endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	items, err := parseVilageFcst(body)
+	if err != nil {
+		return nil, err
+	}
+	if c.cache != nil {
+		c.cache.put(kindUltra, nx, ny, baseDate, baseTime, items)
+	}
+	return items, nil
 }
-
-type sentinelError string
-
-func (e sentinelError) Error() string { return string(e) }
-
-const errNotImplemented = sentinelError("weather: not implemented yet")

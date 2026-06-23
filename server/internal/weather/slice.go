@@ -95,6 +95,21 @@ func SlotDateTime(now time.Time, commute string) (fcstDate, fcstTime string) {
 	return fcstDate, fcstTime
 }
 
+// ultraRangeHours 는 초단기예보가 커버하는 예보 범위다(발표시점부터 +6시간). spec §4.1.
+const ultraRangeHours = 6
+
+// WithinUltraRange 는 특정 예보 시각(fcstDate="YYYYMMDD", fcstTime="HHmm")이 now(KST) 기준
+// "지금부터 6시간 이내"인지 판단한다. 0 <= (slot - now) <= 6시간이면 true.
+// 이 범위면 초단기예보(getUltraSrtFcst)를 우선 시도하고, 밖이면 단기예보를 쓴다(spec §4.1).
+// 과거 시각(slot < now)은 초단기 범위로 보지 않는다(false). now 는 내부에서 KST 로 변환한다.
+func WithinUltraRange(now time.Time, fcstDate, fcstTime string) bool {
+	n := now.In(kst)
+	hh, mm := parseHHmm(fcstTime)
+	slot := time.Date(yearOf(fcstDate), monthOf(fcstDate), dayOf(fcstDate), hh, mm, 0, 0, kst)
+	diff := slot.Sub(n)
+	return diff >= 0 && diff <= ultraRangeHours*time.Hour
+}
+
 // parseHHmm 은 "HHmm" 을 시·분으로 분해한다. 형식이 아니면 0,0.
 func parseHHmm(s string) (h, m int) {
 	if len(s) != 4 {

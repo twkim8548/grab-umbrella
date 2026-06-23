@@ -60,6 +60,100 @@ func TestBaseTimeNonKSTInput(t *testing.T) {
 	}
 }
 
+func TestUltraSrtBaseTime(t *testing.T) {
+	mk := func(y int, mo time.Month, d, h, mi int) time.Time {
+		return time.Date(y, mo, d, h, mi, 0, 0, kst)
+	}
+
+	cases := []struct {
+		name     string
+		now      time.Time
+		wantDate string
+		wantTime string
+	}{
+		// 분 >= 45 → 이번 시각 30분 발표본.
+		{"1650 uses 1630", mk(2026, 6, 23, 16, 50), "20260623", "1630"},
+		// 분 < 45 → 한 시간 전 30분 발표본.
+		{"1620 uses 1530", mk(2026, 6, 23, 16, 20), "20260623", "1530"},
+		// 정확히 분=45 경계(>=) → 이번 시각.
+		{"1645 boundary uses 1630", mk(2026, 6, 23, 16, 45), "20260623", "1630"},
+		// 분=44 → 직전 시각.
+		{"1644 uses 1530", mk(2026, 6, 23, 16, 44), "20260623", "1530"},
+		// 분=00 → 직전 시각.
+		{"1600 uses 1530", mk(2026, 6, 23, 16, 0), "20260623", "1530"},
+		// 자정 경계: 00:20 → 전날 2330.
+		{"0020 uses prev 2330", mk(2026, 6, 23, 0, 20), "20260622", "2330"},
+		// 00:50 → 당일 0030.
+		{"0050 uses 0030", mk(2026, 6, 23, 0, 50), "20260623", "0030"},
+		// 월 경계: 7월 1일 00:10 → 6월 30일 2330.
+		{"month boundary 0010", mk(2026, 7, 1, 0, 10), "20260630", "2330"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotDate, gotTime := UltraSrtBaseTime(tc.now)
+			if gotDate != tc.wantDate || gotTime != tc.wantTime {
+				t.Errorf("UltraSrtBaseTime(%s) = (%s, %s); want (%s, %s)",
+					tc.now.Format(time.RFC3339), gotDate, gotTime, tc.wantDate, tc.wantTime)
+			}
+		})
+	}
+}
+
+func TestUltraSrtBaseTimeNonKSTInput(t *testing.T) {
+	// 2026-06-23 00:00 UTC == 2026-06-23 09:00 KST → 분 0 < 45 → 0830 발표본.
+	utc := time.Date(2026, 6, 23, 0, 0, 0, 0, time.UTC)
+	gotDate, gotTime := UltraSrtBaseTime(utc)
+	if gotDate != "20260623" || gotTime != "0830" {
+		t.Errorf("UltraSrtBaseTime(UTC 0000) = (%s, %s); want (20260623, 0830)", gotDate, gotTime)
+	}
+}
+
+// TestSlotForecastAtT1HFallback 은 초단기예보 items(기온 T1H, TMP 없음)에서 기온이 T1H 로
+// 폴백되는지 검증한다. SKY/PTY/POP 는 단기와 동일 코드명이라 그대로 처리된다.
+func TestSlotForecastAtT1HFallback(t *testing.T) {
+	const ultraResponse = `{
+	  "response": {
+	    "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+	    "body": {"items": {"item": [
+	      {"category":"T1H","fcstDate":"20260623","fcstTime":"1500","fcstValue":"29","nx":60,"ny":127},
+	      {"category":"SKY","fcstDate":"20260623","fcstTime":"1500","fcstValue":"4","nx":60,"ny":127},
+	      {"category":"PTY","fcstDate":"20260623","fcstTime":"1500","fcstValue":"1","nx":60,"ny":127},
+	      {"category":"POP","fcstDate":"20260623","fcstTime":"1500","fcstValue":"80","nx":60,"ny":127},
+	      {"category":"RN1","fcstDate":"20260623","fcstTime":"1500","fcstValue":"1.0","nx":60,"ny":127}
+	    ]}}
+	  }
+	}`
+	items, err := parseVilageFcst([]byte(ultraResponse))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	slot, ok := SlotForecastAt(items, "20260623", "1500")
+	if !ok {
+		t.Fatal("expected slot found")
+	}
+	// 기온은 TMP 없이 T1H(29)로 폴백.
+	if slot.TempC != 29 {
+		t.Errorf("TempC = %d; want 29 (T1H fallback)", slot.TempC)
+	}
+	if slot.SkyText != "흐림" || slot.PtyText != "비" || slot.PopPct != 80 || !slot.NeedUmbrella {
+		t.Errorf("slot = %+v", slot)
+	}
+}
+
+// TestTempCPrefersTMP 는 TMP·T1H 가 둘 다 있으면 TMP 를 우선하는지 검증한다.
+func TestTempCPrefersTMP(t *testing.T) {
+	if got := tempC(map[string]string{"TMP": "25", "T1H": "30"}); got != 25 {
+		t.Errorf("tempC(TMP=25,T1H=30) = %d; want 25", got)
+	}
+	if got := tempC(map[string]string{"T1H": "30"}); got != 30 {
+		t.Errorf("tempC(T1H=30) = %d; want 30", got)
+	}
+	if got := tempC(map[string]string{}); got != 0 {
+		t.Errorf("tempC(empty) = %d; want 0", got)
+	}
+}
+
 func TestSkyText(t *testing.T) {
 	cases := map[int]string{1: "맑음", 3: "구름많음", 4: "흐림", 99: ""}
 	for code, want := range cases {

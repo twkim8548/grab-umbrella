@@ -48,3 +48,31 @@ func BaseTime(now time.Time) (baseDate, baseTime string) {
 	baseTime = time.Date(day.Year(), day.Month(), day.Day(), chosenHour, 0, 0, 0, kst).Format("1504")
 	return baseDate, baseTime
 }
+
+// ultraSrtSafetyMargin 은 초단기예보(getUltraSrtFcst) 발표(매시 30분) 이후 데이터가 실제
+// 제공되기까지의 안전 마진이다. 가이드/후기 기준 "발표 후 45분 이후"(매시 45분) 제공이므로,
+// 현재 분(分)이 45 미만이면 직전 시각 30분 발표본을 써야 한다.
+const ultraSrtSafetyMargin = 45
+
+// UltraSrtBaseTime 은 초단기예보(getUltraSrtFcst) 호출용 base_date/base_time 을 계산한다.
+// spec §4.5.
+//
+// 초단기예보는 매시 30분에 발표되고, 발표 후 45분(매시 45분)부터 제공된다. 따라서:
+//   - now 의 분 >= 45 이면 이번 시각 30분 발표본(예: 16:50 → "1630").
+//   - now 의 분 < 45 이면 한 시간 전 시각 30분 발표본(예: 16:20 → "1530").
+//
+// 자정 경계도 처리한다(예: 00:20 → 전날 "2330"). now 는 어느 타임존이든 내부에서 KST 로
+// 변환한다. 반환 형식: baseDate="YYYYMMDD", baseTime="HHmm"(예: "1630").
+func UltraSrtBaseTime(now time.Time) (baseDate, baseTime string) {
+	n := now.In(kst)
+
+	// 기준 시각: 분 < 45 면 한 시간 이전 발표본 사용.
+	base := time.Date(n.Year(), n.Month(), n.Day(), n.Hour(), 30, 0, 0, kst)
+	if n.Minute() < ultraSrtSafetyMargin {
+		base = base.Add(-time.Hour)
+	}
+
+	baseDate = base.Format("20060102")
+	baseTime = base.Format("1504")
+	return baseDate, baseTime
+}
