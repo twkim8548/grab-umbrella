@@ -3,8 +3,10 @@
 // 설정의 주인은 앱 로컬(AsyncStorage). DB는 푸시용 사본. (spec §2)
 // 주소 기반: 좌표 변환은 서버(/sync)가 담당한다.
 export interface Settings {
-  homeAddress: string;
+  homeAddress: string; // 도로명 주소(지오코딩/서버 전송용)
   workAddress: string;
+  homeDong: string; // 동네 표시용 (예: "역삼동" 또는 "수지구"). 카드에 표시.
+  workDong: string;
   commuteStart: string; // "0830" (HHmm, KST)
   commuteEnd: string; // "1900"
   notificationsEnabled: boolean;

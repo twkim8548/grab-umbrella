@@ -11,6 +11,7 @@ import {
   ScrollView,
 } from "react-native";
 import AddressSearch from "../components/AddressSearch";
+import type { SelectedAddress } from "../components/AddressSearch";
 import { loadSettings, saveSettings } from "../storage/settings";
 import { ensureNotificationPermission, getPushToken } from "../lib/push";
 import { sync } from "../lib/api";
@@ -24,6 +25,8 @@ import type { Settings } from "../lib/types";
 export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   const [homeAddress, setHomeAddress] = useState("");
   const [workAddress, setWorkAddress] = useState("");
+  const [homeDong, setHomeDong] = useState("");
+  const [workDong, setWorkDong] = useState("");
   const [commuteStart, setCommuteStart] = useState("0830");
   const [commuteEnd, setCommuteEnd] = useState("1900");
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
@@ -37,15 +40,22 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
       if (!s) return;
       setHomeAddress(s.homeAddress);
       setWorkAddress(s.workAddress);
+      setHomeDong(s.homeDong ?? "");
+      setWorkDong(s.workDong ?? "");
       setCommuteStart(s.commuteStart);
       setCommuteEnd(s.commuteEnd);
       setNotificationsEnabled(s.notificationsEnabled);
     });
   }, []);
 
-  const onAddressSelected = (addr: string) => {
-    if (picker === "home") setHomeAddress(addr);
-    else if (picker === "work") setWorkAddress(addr);
+  const onAddressSelected = (addr: SelectedAddress) => {
+    if (picker === "home") {
+      setHomeAddress(addr.roadAddress);
+      setHomeDong(addr.dong);
+    } else if (picker === "work") {
+      setWorkAddress(addr.roadAddress);
+      setWorkDong(addr.dong);
+    }
     setPicker(null);
   };
 
@@ -62,6 +72,8 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
     const settings: Settings = {
       homeAddress: homeAddress.trim(),
       workAddress: workAddress.trim(),
+      homeDong,
+      workDong,
       commuteStart,
       commuteEnd,
       notificationsEnabled,
@@ -119,12 +131,14 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
           <AddressRow
             label="집"
             value={homeAddress}
+            dong={homeDong}
             onPress={() => setPicker("home")}
           />
           <View style={styles.separator} />
           <AddressRow
             label="회사"
             value={workAddress}
+            dong={workDong}
             onPress={() => setPicker("work")}
           />
         </View>
@@ -173,17 +187,21 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
 function AddressRow({
   label,
   value,
+  dong,
   onPress,
 }: {
   label: string;
   value: string;
+  dong: string;
   onPress: () => void;
 }) {
+  // dong 이 있으면 "역삼동 · 도로명주소" 식으로 앞에 작게 덧붙인다.
+  const display = value ? (dong ? `${dong} · ${value}` : value) : "주소 검색";
   return (
     <Pressable style={styles.row} onPress={onPress}>
       <Text style={styles.rowLabel}>{label}</Text>
       <Text style={[styles.rowValue, !value && styles.rowPlaceholder]} numberOfLines={1}>
-        {value || "주소 검색"}
+        {display}
       </Text>
     </Pressable>
   );

@@ -7,9 +7,11 @@ import {
   StyleSheet,
 } from "react-native";
 import CommuteCard from "../components/CommuteCard";
+import HourlySheet from "../components/HourlySheet";
 import { loadSettings } from "../storage/settings";
 import { getPushToken } from "../lib/push";
 import { getForecast, NOT_REGISTERED } from "../lib/api";
+import { formatHHmm } from "../lib/format";
 import type { ForecastResponse, Settings } from "../lib/types";
 
 // 메인 화면: 상단 단일 결론 + 부연 한 줄 + 출근/퇴근 두 카드.
@@ -23,7 +25,8 @@ type LoadState =
 
 export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const [expanded, setExpanded] = useState<null | "morning" | "evening">(null);
+  // 어느 슬롯의 시간별 시트가 열렸는가. null 이면 닫힘.
+  const [sheetSlot, setSheetSlot] = useState<null | "morning" | "evening">(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -93,8 +96,9 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
         <ReadyView
           forecast={state.forecast}
           settings={state.settings}
-          expanded={expanded}
-          onToggle={(slot) => setExpanded((cur) => (cur === slot ? null : slot))}
+          sheetSlot={sheetSlot}
+          onOpenSheet={(slot) => setSheetSlot(slot)}
+          onCloseSheet={() => setSheetSlot(null)}
         />
       )}
     </View>
@@ -104,13 +108,15 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
 function ReadyView({
   forecast,
   settings,
-  expanded,
-  onToggle,
+  sheetSlot,
+  onOpenSheet,
+  onCloseSheet,
 }: {
   forecast: ForecastResponse;
   settings: Settings;
-  expanded: null | "morning" | "evening";
-  onToggle: (slot: "morning" | "evening") => void;
+  sheetSlot: null | "morning" | "evening";
+  onOpenSheet: (slot: "morning" | "evening") => void;
+  onCloseSheet: () => void;
 }) {
   const { morning, evening } = forecast;
   // null 슬롯은 우산 판정에서 제외.
@@ -119,7 +125,7 @@ function ReadyView({
 
   return (
     <View style={styles.readyContainer}>
-      {/* 상단 단일 결론 */}
+      {/* 상단 단일 결론: 화면 위쪽~중앙(황금비 지점)에 배치 */}
       <View style={styles.conclusion}>
         <Text style={styles.conclusionIcon}>{needUmbrella ? "☔️" : "🌤"}</Text>
         <Text style={styles.conclusionText}>
@@ -128,24 +134,39 @@ function ReadyView({
         <Text style={styles.subtitle}>{subtitleFor(morning, evening)}</Text>
       </View>
 
-      {/* 하단 출근/퇴근 두 카드 */}
+      {/* 하단 출근/퇴근 두 카드: 결론 아래 적절한 위치에 */}
       <View style={styles.cards}>
         <CommuteCard
           label="출근"
-          time={formatTime(settings.commuteStart)}
+          time={formatHHmm(settings.commuteStart)}
+          dong={settings.homeDong}
           data={morning}
-          expanded={expanded === "morning"}
-          onToggle={() => onToggle("morning")}
+          onPress={() => onOpenSheet("morning")}
         />
         <View style={{ width: 12 }} />
         <CommuteCard
           label="퇴근"
-          time={formatTime(settings.commuteEnd)}
+          time={formatHHmm(settings.commuteEnd)}
+          dong={settings.workDong}
           data={evening}
-          expanded={expanded === "evening"}
-          onToggle={() => onToggle("evening")}
+          onPress={() => onOpenSheet("evening")}
         />
       </View>
+
+      <View style={styles.bottomSpacer} />
+
+      <HourlySheet
+        visible={sheetSlot === "morning"}
+        title="출근 시간대"
+        hourly={morning?.hourly ?? null}
+        onClose={onCloseSheet}
+      />
+      <HourlySheet
+        visible={sheetSlot === "evening"}
+        title="퇴근 시간대"
+        hourly={evening?.hourly ?? null}
+        onClose={onCloseSheet}
+      />
     </View>
   );
 }
@@ -161,12 +182,6 @@ function subtitleFor(
   if (m) return "출근길에 비가 와요";
   if (e) return "퇴근길에 비가 와요";
   return "오늘은 우산 없이 가벼워요";
-}
-
-// "0830" → "8:30"
-function formatTime(hhmm: string): string {
-  if (hhmm.length !== 4) return hhmm;
-  return `${Number(hhmm.slice(0, 2))}:${hhmm.slice(2)}`;
 }
 
 const styles = StyleSheet.create({
@@ -189,13 +204,20 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: { color: "#fff", fontSize: 17, fontWeight: "600" },
   readyContainer: { flex: 1 },
-  conclusion: { flex: 1, alignItems: "center", justifyContent: "center" },
+  // 결론은 화면 위쪽~중앙(황금비 지점)에 오도록 위 여백을 더 크게.
+  conclusion: {
+    flex: 0.62,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   conclusionIcon: { fontSize: 72 },
   conclusionText: { fontSize: 34, fontWeight: "700", marginTop: 16, textAlign: "center" },
   subtitle: { fontSize: 17, color: "#8E8E93", marginTop: 8, textAlign: "center" },
+  // 카드는 결론 바로 아래에 자리. 두 카드 높이는 CommuteCard 고정 높이로 동일.
   cards: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    marginBottom: 12,
+    alignItems: "stretch",
   },
+  // 카드 아래 남는 공간(결론을 위로 끌어올리는 균형추).
+  bottomSpacer: { flex: 0.38 },
 });

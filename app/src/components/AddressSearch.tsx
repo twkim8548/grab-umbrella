@@ -69,13 +69,23 @@ function isPostcodeResource(url: string): boolean {
   );
 }
 
+// onSelected 로 넘기는 주소 묶음.
+// - roadAddress: 도로명 주소(지오코딩/서버 전송용).
+// - jibunAddress: 지번 주소(동 추출 근거, 표시용으론 저장 안 해도 됨).
+// - dong: 동네 표시용. 법정동(bname) 우선, 없으면 시군구(sigungu).
+export interface SelectedAddress {
+  roadAddress: string;
+  jibunAddress: string;
+  dong: string;
+}
+
 export default function AddressSearch({
   visible,
   onSelected,
   onClose,
 }: {
   visible: boolean;
-  onSelected: (address: string) => void;
+  onSelected: (address: SelectedAddress) => void;
   onClose: () => void;
 }) {
   const handleMessage = (event: WebViewMessageEvent) => {
@@ -83,10 +93,17 @@ export default function AddressSearch({
       const data = JSON.parse(event.nativeEvent.data) as {
         roadAddress?: string;
         address?: string;
+        jibunAddress?: string;
+        autoJibunAddress?: string;
+        bname?: string;
+        sigungu?: string;
       };
-      const addr = data.roadAddress || data.address;
-      if (addr) {
-        onSelected(addr);
+      const roadAddress = data.roadAddress || data.address || "";
+      const jibunAddress = data.jibunAddress || data.autoJibunAddress || "";
+      // 동네 표시: 법정동(bname, "○○동/읍/면") 우선, 비었으면 시군구(sigungu) 폴백.
+      const dong = (data.bname && data.bname.trim()) || (data.sigungu && data.sigungu.trim()) || "";
+      if (roadAddress) {
+        onSelected({ roadAddress, jibunAddress, dong });
         onClose();
       }
     } catch {
