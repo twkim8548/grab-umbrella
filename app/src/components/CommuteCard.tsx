@@ -6,12 +6,14 @@ import type { SlotForecast } from "../lib/types";
 // 탭하면 상위(MainScreen)가 시간별 흐름을 하단 시트로 연다. hourly 없으면 탭 비활성.
 export default function CommuteCard({
   label,
+  day,
   time,
   dong,
   data,
   onPress,
 }: {
   label: string; // "출근" | "퇴근"
+  day?: string; // "오늘" | "내일". 시각 옆에 작게.
   time: string; // "8:30" 표시용
   dong?: string; // 동네 (예: "역삼동"). 빈 문자열이면 표시 생략.
   data: SlotForecast | null;
@@ -27,7 +29,10 @@ export default function CommuteCard({
     >
       <View style={styles.headerRow}>
         <Text style={styles.label}>{label}</Text>
-        <Text style={styles.time}>{time}</Text>
+        <Text style={styles.time}>
+          {day ? `${day} ` : ""}
+          {time}
+        </Text>
       </View>
       {dong ? (
         <Text style={styles.dong} numberOfLines={1}>

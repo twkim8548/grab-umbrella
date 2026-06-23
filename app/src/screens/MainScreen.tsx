@@ -11,7 +11,7 @@ import HourlySheet from "../components/HourlySheet";
 import { loadSettings } from "../storage/settings";
 import { getPushToken } from "../lib/push";
 import { getForecast, NOT_REGISTERED } from "../lib/api";
-import { formatHHmm } from "../lib/format";
+import { formatHHmm, dayLabel } from "../lib/format";
 import type { ForecastResponse, Settings } from "../lib/types";
 
 // 메인 화면: 상단 단일 결론 + 부연 한 줄 + 출근/퇴근 두 카드.
@@ -138,6 +138,7 @@ function ReadyView({
       <View style={styles.cards}>
         <CommuteCard
           label="출근"
+          day={dayLabel(settings.commuteStart)}
           time={formatHHmm(settings.commuteStart)}
           dong={settings.homeDong}
           data={morning}
@@ -146,6 +147,7 @@ function ReadyView({
         <View style={{ width: 12 }} />
         <CommuteCard
           label="퇴근"
+          day={dayLabel(settings.commuteEnd)}
           time={formatHHmm(settings.commuteEnd)}
           dong={settings.workDong}
           data={evening}
