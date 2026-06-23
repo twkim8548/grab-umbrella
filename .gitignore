@@ -22,6 +22,12 @@ yarn-error.*
 # --- OMC runtime artifacts ---
 .omc/
 
+# --- 기상청 가이드 (공개문서, 참조용 바이너리. 출처는 docs/kma-guide/README.md) ---
+docs/kma-guide/*.docx
+docs/kma-guide/*.xlsx
+docs/kma-guide/*.hwp
+docs/kma-guide/*.pdf
+
 # --- OS / editor ---
 .DS_Store
 .idea/
