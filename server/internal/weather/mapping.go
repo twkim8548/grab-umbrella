@@ -43,3 +43,16 @@ func ptyText(code int) string {
 func NeedUmbrella(pty, pop int) bool {
 	return pty != 0 || pop >= popUmbrellaThreshold
 }
+
+// PrecipText 는 기상청 PCP(1시간 강수량)/SNO(적설) 비수치 문자열을 사람이 읽는 텍스트로
+// 정규화한다. 이 값들은 "강수없음","1.0mm","30.0~50.0mm" 처럼 문자열로 오며, 무강수는
+// "-","null","0","강수없음" 으로 표현된다(가이드 확인). 무강수는 "강수없음"으로 통일하고,
+// 그 외 값은 그대로 통과시킨다. (현재 카드/hourly 에 강수량을 넣지는 않으나, 필요 시 사용.)
+func PrecipText(raw string) string {
+	switch raw {
+	case "", "-", "null", "0", "0.0", "강수없음", "적설없음":
+		return "강수없음"
+	default:
+		return raw
+	}
+}

@@ -21,7 +21,7 @@ type Client struct {
 	serviceKey string
 	baseURL    string
 	httpClient *http.Client
-	// TODO(다음 단계): 캐시(같은 격자·같은 발표본 1회만 조회, spec §4.6), 폴백.
+	cache      *forecastCache // 같은 격자·같은 발표본 1회만 조회(spec §4.6).
 }
 
 func New(serviceKey, baseURL string) *Client {
@@ -29,6 +29,7 @@ func New(serviceKey, baseURL string) *Client {
 		serviceKey: serviceKey,
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		cache:      newForecastCache(),
 	}
 }
 
@@ -69,6 +70,13 @@ type kmaResponse struct {
 func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, error) {
 	baseDate, baseTime := BaseTime(time.Now())
 
+	// 캐시 적중: 같은 격자·같은 발표본은 재호출 없이 공유한다(spec §4.6).
+	if c.cache != nil {
+		if items, ok := c.cache.get(nx, ny, baseDate, baseTime); ok {
+			return items, nil
+		}
+	}
+
 	q := url.Values{}
 	q.Set("serviceKey", c.serviceKey)
 	q.Set("dataType", "JSON")
@@ -101,7 +109,14 @@ func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, er
 		return nil, fmt.Errorf("weather: read body: %w", err)
 	}
 
-	return parseVilageFcst(body)
+	items, err := parseVilageFcst(body)
+	if err != nil {
+		return nil, err
+	}
+	if c.cache != nil {
+		c.cache.put(nx, ny, baseDate, baseTime, items)
+	}
+	return items, nil
 }
 
 // parseVilageFcst 는 getVilageFcst 응답 본문을 파싱한다. resultCode 가 "00"이 아니면

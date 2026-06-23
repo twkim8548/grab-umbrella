@@ -3,8 +3,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/twkim8548/grab-umbrella/server/internal/grid"
 	"github.com/twkim8548/grab-umbrella/server/internal/store"
 	"github.com/twkim8548/grab-umbrella/server/internal/weather"
@@ -56,11 +60,63 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// Forecast 는 GET /forecast. 출근/퇴근 카드용 가공 데이터 + 시간별 흐름. spec §3.
+// forecastResponse 는 GET /forecast 응답이다. 앱 ForecastResponse 와 일치.
+// 데이터가 없는 슬롯은 null 로 내려 앱이 "불러오는 중"을 graceful 하게 표시하게 한다.
+type forecastResponse struct {
+	Morning *weather.SlotCard `json:"morning"`
+	Evening *weather.SlotCard `json:"evening"`
+}
+
+// Forecast 는 GET /forecast. 출근/퇴근 카드용 가공 데이터 + 시간별 흐름. spec §3·§7.1.
 func (h *Handler) Forecast(w http.ResponseWriter, r *http.Request) {
-	// TODO: push_token(또는 격자) + 출퇴근 시각으로 단기예보 조회·가공.
-	//       출근/퇴근 카드 + 점진적 공개용 시간별 슬라이스 반환 (spec §7.1).
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	token := r.URL.Query().Get("push_token")
+	if token == "" {
+		http.Error(w, "push_token required", http.StatusBadRequest)
+		return
+	}
+
+	dev, err := h.Store.GetByToken(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "device not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("forecast: GetByToken: %v", err)
+		http.Error(w, "lookup failed", http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now()
+	// 출근/퇴근 각 슬롯의 fcstDate(오늘/내일) + 정시 fcstTime 산출.
+	mDate, mTime := weather.SlotDateTime(now, dev.CommuteStart)
+	eDate, eTime := weather.SlotDateTime(now, dev.CommuteEnd)
+
+	// 집 격자 = 출근 카드, 회사 격자 = 퇴근 카드. 같은 격자면 캐시로 호출 공유된다.
+	homeItems, err := h.Weather.VilageForecast(r.Context(), dev.HomeNx, dev.HomeNy)
+	if err != nil {
+		log.Printf("forecast: VilageForecast(home %d,%d): %v", dev.HomeNx, dev.HomeNy, err)
+		http.Error(w, "weather upstream failed", http.StatusBadGateway)
+		return
+	}
+	workItems, err := h.Weather.VilageForecast(r.Context(), dev.WorkNx, dev.WorkNy)
+	if err != nil {
+		log.Printf("forecast: VilageForecast(work %d,%d): %v", dev.WorkNx, dev.WorkNy, err)
+		http.Error(w, "weather upstream failed", http.StatusBadGateway)
+		return
+	}
+
+	mBefore, mAfter := weather.MorningWindow()
+	eBefore, eAfter := weather.EveningWindow()
+
+	var resp forecastResponse
+	if card, ok := weather.BuildSlotCard(homeItems, mDate, mTime, mBefore, mAfter); ok {
+		resp.Morning = &card
+	}
+	if card, ok := weather.BuildSlotCard(workItems, eDate, eTime, eBefore, eAfter); ok {
+		resp.Evening = &card
+	}
+
+	writeJSON(w, resp)
 }
 
 // ForecastNow 는 GET /forecast/now (선택). 초단기실황 "지금 바깥". spec §3.
