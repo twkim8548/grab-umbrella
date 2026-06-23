@@ -89,24 +89,9 @@ func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, er
 
 	endpoint := c.baseURL + "/getVilageFcst?" + q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	body, err := c.getWithRetry(ctx, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("weather: build request: %w", err)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("weather: http do: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("weather: http status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("weather: read body: %w", err)
+		return nil, err
 	}
 
 	items, err := parseVilageFcst(body)
@@ -117,6 +102,56 @@ func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, er
 		c.cache.put(nx, ny, baseDate, baseTime, items)
 	}
 	return items, nil
+}
+
+// getWithRetry 는 endpoint 를 GET 하고, 429/5xx(일시적 실패)면 지수 backoff 로 재시도한다.
+// 기상청은 느리고 실패가 잦다(spec §4.6) — 특히 429(rate limit)·5xx 는 잠깐 뒤 보통 풀린다.
+// 4xx(429 제외)는 재시도해도 의미 없으므로 즉시 실패한다.
+func (c *Client) getWithRetry(ctx context.Context, endpoint string) ([]byte, error) {
+	const maxAttempts = 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// 지수 backoff: 0.5s, 1s. context 취소되면 즉시 중단.
+			backoff := time.Duration(250<<attempt) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("weather: build request: %w", err)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("weather: http do: %w", err)
+			continue // 네트워크 오류는 재시도.
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return nil, fmt.Errorf("weather: read body: %w", err)
+			}
+			return body, nil
+		}
+
+		status := resp.StatusCode
+		resp.Body.Close()
+		lastErr = fmt.Errorf("weather: http status %d", status)
+
+		// 429(rate limit) 와 5xx 만 재시도. 그 외 4xx 는 즉시 실패.
+		if status != http.StatusTooManyRequests && status < 500 {
+			return nil, lastErr
+		}
+	}
+	return nil, fmt.Errorf("weather: retries exhausted: %w", lastErr)
 }
 
 // parseVilageFcst 는 getVilageFcst 응답 본문을 파싱한다. resultCode 가 "00"이 아니면
