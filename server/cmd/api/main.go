@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/twkim8548/grab-umbrella/server/internal/geocode"
 	"github.com/twkim8548/grab-umbrella/server/internal/handler"
 	"github.com/twkim8548/grab-umbrella/server/internal/store"
 	"github.com/twkim8548/grab-umbrella/server/internal/weather"
@@ -33,7 +34,15 @@ func main() {
 	wc := weather.New(kmaKey, env("KMA_BASE_URL",
 		"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"))
 
-	h := &handler.Handler{Store: st, Weather: wc}
+	// 카카오 키는 /sync(주소→위경도)에서만 필요. 없어도 서버는 떠야 한다(KMA 키와 동일 정책).
+	// 키 없이 /sync 호출 시 핸들러에서 422 로 처리된다.
+	kakaoKey := os.Getenv("KAKAO_REST_API_KEY")
+	if kakaoKey == "" {
+		log.Println("warning: KAKAO_REST_API_KEY not set — /sync will fail until configured")
+	}
+	gc := geocode.New(kakaoKey)
+
+	h := &handler.Handler{Store: st, Weather: wc, Geocode: gc}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger, middleware.Recoverer)

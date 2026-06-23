@@ -10,15 +10,17 @@ import (
 
 // Device 는 devices 테이블 한 줄에 대응한다.
 type Device struct {
-	PushToken            string
-	HomeNx, HomeNy       int
-	WorkNx, WorkNy       int
-	CommuteStart         string // "0900"
-	CommuteEnd           string // "1800"
-	LastMorningPushDate  string // "YYYYMMDD"
-	LastEveningPushDate  string
-	LastSyncedAt         time.Time
-	CreatedAt            time.Time
+	PushToken           string
+	HomeNx, HomeNy      int
+	WorkNx, WorkNy      int
+	HomeAddress         string // 표시 보조용 원문 주소 (nullable)
+	WorkAddress         string
+	CommuteStart        string // "0900"
+	CommuteEnd          string // "1800"
+	LastMorningPushDate string // "YYYYMMDD"
+	LastEveningPushDate string
+	LastSyncedAt        time.Time
+	CreatedAt           time.Time
 }
 
 type Store struct {
@@ -40,18 +42,22 @@ func (s *Store) Close() { s.pool.Close() }
 func (s *Store) Upsert(ctx context.Context, d Device) error {
 	const q = `
 INSERT INTO devices (push_token, home_nx, home_ny, work_nx, work_ny,
+                     home_address, work_address,
                      commute_start, commute_end, last_synced_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
 ON CONFLICT (push_token) DO UPDATE SET
     home_nx = EXCLUDED.home_nx,
     home_ny = EXCLUDED.home_ny,
     work_nx = EXCLUDED.work_nx,
     work_ny = EXCLUDED.work_ny,
+    home_address = EXCLUDED.home_address,
+    work_address = EXCLUDED.work_address,
     commute_start = EXCLUDED.commute_start,
     commute_end = EXCLUDED.commute_end,
     last_synced_at = now();`
 	_, err := s.pool.Exec(ctx, q, d.PushToken, d.HomeNx, d.HomeNy,
-		d.WorkNx, d.WorkNy, d.CommuteStart, d.CommuteEnd)
+		d.WorkNx, d.WorkNy, d.HomeAddress, d.WorkAddress,
+		d.CommuteStart, d.CommuteEnd)
 	return err
 }
 

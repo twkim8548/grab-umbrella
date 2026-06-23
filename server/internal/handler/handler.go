@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/twkim8548/grab-umbrella/server/internal/geocode"
 	"github.com/twkim8548/grab-umbrella/server/internal/grid"
 	"github.com/twkim8548/grab-umbrella/server/internal/store"
 	"github.com/twkim8548/grab-umbrella/server/internal/weather"
@@ -17,20 +18,20 @@ import (
 type Handler struct {
 	Store   *store.Store
 	Weather *weather.Client
+	Geocode *geocode.Client
 }
 
-// syncRequest — POST /sync 입력. 앱이 위경도로 올리면 서버가 격자로 변환.
+// syncRequest — POST /sync 입력. 앱이 도로명 주소를 보내면 서버가 위경도→격자로 변환.
+// 변환 로직은 서버 한 곳에 둔다(spec §2).
 type syncRequest struct {
-	PushToken    string  `json:"push_token"`
-	HomeLat      float64 `json:"home_lat"`
-	HomeLng      float64 `json:"home_lng"`
-	WorkLat      float64 `json:"work_lat"`
-	WorkLng      float64 `json:"work_lng"`
-	CommuteStart string  `json:"commute_start"` // "0900"
-	CommuteEnd   string  `json:"commute_end"`   // "1800"
+	PushToken    string `json:"push_token"`
+	HomeAddress  string `json:"home_address"`
+	WorkAddress  string `json:"work_address"`
+	CommuteStart string `json:"commute_start"` // "0900"
+	CommuteEnd   string `json:"commute_end"`   // "1800"
 }
 
-// Sync 는 POST /sync. 위경도→격자 변환 후 devices upsert. spec §3.
+// Sync 는 POST /sync. 주소→위경도(카카오)→격자 변환 후 devices upsert. spec §2·§3.
 func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	var req syncRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -41,8 +42,26 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "push_token required", http.StatusBadRequest)
 		return
 	}
-	hnx, hny := grid.ToGrid(req.HomeLat, req.HomeLng)
-	wnx, wny := grid.ToGrid(req.WorkLat, req.WorkLng)
+	if req.HomeAddress == "" || req.WorkAddress == "" {
+		http.Error(w, "home_address and work_address required", http.StatusBadRequest)
+		return
+	}
+
+	homeLat, homeLng, err := h.Geocode.Geocode(r.Context(), req.HomeAddress)
+	if err != nil {
+		log.Printf("sync: geocode home %q: %v", req.HomeAddress, err)
+		http.Error(w, "집 주소를 찾을 수 없습니다", http.StatusUnprocessableEntity)
+		return
+	}
+	workLat, workLng, err := h.Geocode.Geocode(r.Context(), req.WorkAddress)
+	if err != nil {
+		log.Printf("sync: geocode work %q: %v", req.WorkAddress, err)
+		http.Error(w, "회사 주소를 찾을 수 없습니다", http.StatusUnprocessableEntity)
+		return
+	}
+
+	hnx, hny := grid.ToGrid(homeLat, homeLng)
+	wnx, wny := grid.ToGrid(workLat, workLng)
 
 	d := store.Device{
 		PushToken:    req.PushToken,
@@ -50,6 +69,8 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		HomeNy:       hny,
 		WorkNx:       wnx,
 		WorkNy:       wny,
+		HomeAddress:  req.HomeAddress,
+		WorkAddress:  req.WorkAddress,
 		CommuteStart: req.CommuteStart,
 		CommuteEnd:   req.CommuteEnd,
 	}
