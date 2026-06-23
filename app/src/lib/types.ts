@@ -1,17 +1,13 @@
 // 앱 ↔ 서버 공유 타입. spec §2, §3.
 
 // 설정의 주인은 앱 로컬(AsyncStorage). DB는 푸시용 사본. (spec §2)
+// 주소 기반: 좌표 변환은 서버(/sync)가 담당한다.
 export interface Settings {
-  home: LatLng;
-  work: LatLng;
-  commuteStart: string; // "0900" (HHmm, KST)
-  commuteEnd: string; // "1800"
+  homeAddress: string;
+  workAddress: string;
+  commuteStart: string; // "0830" (HHmm, KST)
+  commuteEnd: string; // "1900"
   notificationsEnabled: boolean;
-}
-
-export interface LatLng {
-  lat: number;
-  lng: number;
 }
 
 // GET /forecast 응답의 카드 한 장 (출근 또는 퇴근). spec §3.
@@ -32,7 +28,8 @@ export interface HourlyPoint {
   ptyText: string;
 }
 
+// 데이터 없는 슬롯은 null. (서버 계약)
 export interface ForecastResponse {
-  morning: SlotForecast;
-  evening: SlotForecast;
+  morning: SlotForecast | null;
+  evening: SlotForecast | null;
 }
