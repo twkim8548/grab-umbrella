@@ -123,15 +123,15 @@ function ReadyView({
   const needUmbrella =
     (morning?.needUmbrella ?? false) || (evening?.needUmbrella ?? false);
 
+  const { conclusion, subtitle } = mainMessage(settings, morning, evening);
+
   return (
     <View style={styles.readyContainer}>
       {/* 상단 단일 결론: 화면 위쪽~중앙(황금비 지점)에 배치 */}
       <View style={styles.conclusion}>
         <Text style={styles.conclusionIcon}>{needUmbrella ? "☔️" : "🌤"}</Text>
-        <Text style={styles.conclusionText}>
-          {needUmbrella ? "우산 챙기세요" : "우산 필요 없어요"}
-        </Text>
-        <Text style={styles.subtitle}>{subtitleFor(morning, evening)}</Text>
+        <Text style={styles.conclusionText}>{conclusion}</Text>
+        <Text style={styles.subtitle}>{subtitle}</Text>
       </View>
 
       {/* 하단 출근/퇴근 두 카드: 결론 아래 적절한 위치에 */}
@@ -173,17 +173,39 @@ function ReadyView({
   );
 }
 
-// 부연 한 줄: 어느 시점이 비인지 정직하게. null 슬롯은 판정 제외.
-function subtitleFor(
+// 상단 메시지(결론 + 부연)를 만든다.
+//  - 결론: "{오늘/내일}은 우산 {챙기세요/필요 없어요}" (날짜 통합).
+//  - 부연: 어디서 비 오는지("출근길에 비가 와요" / "퇴근길에 비가 와요" / "하루 종일 비가 와요" / "우산 없이 가벼워요").
+// 우산 판정은 하루 단위(출근 OR 퇴근 중 하나라도 비). null 슬롯은 판정 제외.
+//
+// 날짜 접두사: 출근 전이면 둘 다 오늘 → "오늘", 퇴근 후면 둘 다 내일 → "내일".
+// 출근~퇴근 사이(애매 구간)는 두 카드의 날짜가 갈리는데, 이 경우는 추후 두 줄 처리 예정이라
+// 지금은 가까운 쪽(퇴근=오늘 기준)으로 "오늘"을 쓴다.
+function mainMessage(
+  settings: Settings,
   morning: ForecastResponse["morning"],
   evening: ForecastResponse["evening"]
-): string {
+): { conclusion: string; subtitle: string } {
   const m = morning?.needUmbrella ?? false;
   const e = evening?.needUmbrella ?? false;
-  if (m && e) return "오늘 종일 비 소식";
-  if (m) return "출근길에 비가 와요";
-  if (e) return "퇴근길에 비가 와요";
-  return "오늘은 우산 없이 가벼워요";
+  const needUmbrella = m || e;
+
+  // 두 카드의 날짜 라벨. 같으면 그 날, 다르면(애매 구간) "오늘"로.
+  const startDay = dayLabel(settings.commuteStart);
+  const endDay = dayLabel(settings.commuteEnd);
+  const dayWord = startDay === endDay ? startDay : "오늘";
+
+  const conclusion = needUmbrella
+    ? `${dayWord}은 우산 챙기세요`
+    : `${dayWord}은 우산 필요 없어요`;
+
+  let subtitle: string;
+  if (m && e) subtitle = "하루 종일 비가 와요";
+  else if (m) subtitle = "출근길에 비가 와요";
+  else if (e) subtitle = "퇴근길에 비가 와요";
+  else subtitle = "우산 없이 가벼워요";
+
+  return { conclusion, subtitle };
 }
 
 const styles = StyleSheet.create({
