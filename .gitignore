@@ -1,0 +1,29 @@
+# --- Go ---
+server/bin/
+*.exe
+*.test
+*.out
+
+# --- env / secrets ---
+.env
+.env.local
+*.local
+
+# --- Node / Expo ---
+node_modules/
+app/.expo/
+app/dist/
+app/web-build/
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# --- OMC runtime artifacts ---
+.omc/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
