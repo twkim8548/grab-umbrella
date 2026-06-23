@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "우산챙겨?",
+    "slug": "grab-umbrella",
+    "scheme": "grabumbrella",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.twkim8548.grabumbrella",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.twkim8548.grabumbrella"
+    },
+    "plugins": [
+      "expo-notifications"
+    ]
+  }
+}
