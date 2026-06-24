@@ -9,6 +9,9 @@ export interface Settings {
   workDong: string;
   commuteStart: string; // "0830" (HHmm, KST)
   commuteEnd: string; // "1900"
+  // 출근일(요일) 7자리 "0111110" — 일~토 순서, 1=on. 이 요일에만 푸시 발송.
+  // 기본 평일(월~금)="0111110". 미설정(구버전 로컬값) 시 평일로 폴백.
+  commuteDays: string;
   notificationsEnabled: boolean;
 }
 

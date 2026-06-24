@@ -28,7 +28,7 @@ Parameters:
     Description: (선택) api /cron/tick 수동 트리거 보호용 시크릿
   PushLeadMinutes:
     Type: String
-    Default: "30"
+    Default: "30"   # 출발 30분 전 발송 (설정 화면 안내 "30분 전"과 일치)
 
 Globals:
   Function:

@@ -86,3 +86,36 @@ func TestHHmmToMinutes(t *testing.T) {
 		}
 	}
 }
+
+// TestDayOn 은 출근일 요일 필터를 검증한다(0=일 … 6=토). 푸시 정확성의 핵심.
+func TestDayOn(t *testing.T) {
+	const weekdays = "0111110" // 월~금
+	const everyday = "1111111"
+	const weekendOnly = "1000001" // 일·토
+
+	cases := []struct {
+		days    string
+		weekday int
+		want    bool
+	}{
+		{weekdays, 0, false}, // 일 off
+		{weekdays, 1, true},  // 월 on
+		{weekdays, 5, true},  // 금 on
+		{weekdays, 6, false}, // 토 off
+		{everyday, 0, true},
+		{everyday, 6, true},
+		{weekendOnly, 0, true},  // 일 on
+		{weekendOnly, 3, false}, // 수 off
+		{weekendOnly, 6, true},  // 토 on
+		// 형식 손상/구버전 → 평일 폴백.
+		{"", 1, true},       // 빈값 → 월=on
+		{"", 0, false},      // 빈값 → 일=off
+		{"111", 2, true},    // 짧음 → 화=on(폴백)
+		{"0000000", 1, false}, // 전부 off → 월도 off
+	}
+	for _, tc := range cases {
+		if got := dayOn(tc.days, tc.weekday); got != tc.want {
+			t.Errorf("dayOn(%q, %d) = %v; want %v", tc.days, tc.weekday, got, tc.want)
+		}
+	}
+}

@@ -34,6 +34,7 @@ type syncRequest struct {
 	WorkAddress  string `json:"work_address"`
 	CommuteStart string `json:"commute_start"` // "0900"
 	CommuteEnd   string `json:"commute_end"`   // "1800"
+	CommuteDays  string `json:"commute_days"`  // "0111110" 일~토, 1=on. 빈값/형식오류면 평일 기본.
 }
 
 // Sync 는 POST /sync. 주소→위경도(카카오)→격자 변환 후 devices upsert. spec §2·§3.
@@ -78,6 +79,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		WorkAddress:  req.WorkAddress,
 		CommuteStart: req.CommuteStart,
 		CommuteEnd:   req.CommuteEnd,
+		CommuteDays:  normalizeDays(req.CommuteDays),
 	}
 	if err := h.Store.Upsert(r.Context(), d); err != nil {
 		http.Error(w, "upsert failed", http.StatusInternalServerError)
@@ -200,6 +202,20 @@ func (h *Handler) buildCardForDate(ctx context.Context, now time.Time, slot, fcs
 // ForecastNow 는 GET /forecast/now (선택). 초단기실황 "지금 바깥". spec §3.
 func (h *Handler) ForecastNow(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// normalizeDays 는 commute_days 입력을 검증한다. 7자리 0/1 이면 그대로, 아니면(빈값/구버전
+// 앱/손상) 평일(월~금)="0111110" 으로 폴백한다. 서버에서 한 번 더 보정해 cron 을 단순하게.
+func normalizeDays(s string) string {
+	if len(s) != 7 {
+		return "0111110"
+	}
+	for i := 0; i < 7; i++ {
+		if s[i] != '0' && s[i] != '1' {
+			return "0111110"
+		}
+	}
+	return s
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -21,7 +21,21 @@ import { sync } from "../lib/api";
 import type { Settings } from "../lib/types";
 import { formatHHmm } from "../lib/format";
 
-// 설정 화면: 집/회사 주소, 출퇴근 시각, 알림 on/off. spec §7.1.
+// 출근일 표현: 7자리 "일월화수목금토", 1=on. cron/서버와 동일 계약.
+const DAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"] as const;
+const WEEKDAYS = "0111110"; // 월~금
+// 한 요일 토글: i 번째 비트를 뒤집어 새 문자열 반환.
+function toggleDay(days: string, i: number): string {
+  const arr = days.split("");
+  arr[i] = arr[i] === "1" ? "0" : "1";
+  return arr.join("");
+}
+// 7자리 0/1 문자열인지 검증(구버전 로컬값/누락 방어).
+function isValidDays(v: unknown): v is string {
+  return typeof v === "string" && /^[01]{7}$/.test(v);
+}
+
+// 설정 화면: 집/회사 주소, 출퇴근 시각, 출근일, 알림 on/off. spec §7.1.
 // 저장 시 saveSettings(local) → sync(서버) 단방향. (spec §2)
 //
 // UX 메모: 출퇴근 시각은 네이티브 시간 피커(@react-native-community/datetimepicker,
@@ -35,6 +49,7 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   const [workDong, setWorkDong] = useState("");
   const [commuteStart, setCommuteStart] = useState("0830");
   const [commuteEnd, setCommuteEnd] = useState("1900");
+  const [commuteDays, setCommuteDays] = useState(WEEKDAYS); // 기본 평일(월~금)
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 
   const [picker, setPicker] = useState<null | "home" | "work">(null);
@@ -50,6 +65,7 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
       setWorkDong(s.workDong ?? "");
       setCommuteStart(s.commuteStart);
       setCommuteEnd(s.commuteEnd);
+      setCommuteDays(isValidDays(s.commuteDays) ? s.commuteDays : WEEKDAYS);
       setNotificationsEnabled(s.notificationsEnabled);
     });
   }, []);
@@ -82,6 +98,7 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
       workDong,
       commuteStart,
       commuteEnd,
+      commuteDays,
       notificationsEnabled,
     };
 
@@ -156,6 +173,32 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
           <View style={styles.separator} />
           <TimeRow label="퇴근" value={commuteEnd} onChange={setCommuteEnd} />
         </View>
+
+        {/* 출근일 그룹 */}
+        <Text style={styles.groupHeader}>출근일</Text>
+        <View style={styles.group}>
+          <View style={styles.daysRow}>
+            {DAY_LABELS.map((label, i) => {
+              const on = commuteDays[i] === "1";
+              return (
+                <Pressable
+                  key={i}
+                  style={[styles.dayToggle, on && styles.dayToggleOn]}
+                  onPress={() => setCommuteDays(toggleDay(commuteDays, i))}
+                >
+                  <Text style={[styles.dayLabel, on && styles.dayLabelOn]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.separator} />
+          <Pressable style={styles.row} onPress={() => setCommuteDays(WEEKDAYS)}>
+            <Text style={styles.weekdayPreset}>월~금 자동 선택</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.helperText}>
+          출근·퇴근 시간 30분 전에 알려드려요. (선택한 출근일에만)
+        </Text>
 
         {/* 알림 그룹 */}
         <Text style={styles.groupHeader}>알림</Text>
@@ -332,6 +375,26 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 17, color: "#000" },
   rowValue: { fontSize: 17, color: "#000", flexShrink: 1, marginLeft: 12, textAlign: "right" },
   rowPlaceholder: { color: "#007AFF" },
+  // 출근일 토글 행: 7개 요일 칩을 가로로 균등 배치.
+  daysRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  dayToggle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E5E5EA",
+  },
+  dayToggleOn: { backgroundColor: "#007AFF" },
+  dayLabel: { fontSize: 15, fontWeight: "600", color: "#8E8E93" },
+  dayLabelOn: { color: "#fff" },
+  weekdayPreset: { fontSize: 17, color: "#007AFF" },
+  helperText: { fontSize: 13, color: "#8E8E93", marginTop: 8, marginLeft: 4 },
   saveButton: {
     backgroundColor: "#007AFF",
     borderRadius: 12,

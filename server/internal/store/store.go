@@ -18,6 +18,7 @@ type Device struct {
 	WorkAddress         string
 	CommuteStart        string // "0900"
 	CommuteEnd          string // "1800"
+	CommuteDays         string // "0111110" 일~토, 1=on. 이 요일에만 발송.
 	LastMorningPushDate string // "YYYYMMDD"
 	LastEveningPushDate string
 	LastSyncedAt        time.Time
@@ -44,8 +45,8 @@ func (s *Store) Upsert(ctx context.Context, d Device) error {
 	const q = `
 INSERT INTO devices (push_token, home_nx, home_ny, work_nx, work_ny,
                      home_address, work_address,
-                     commute_start, commute_end, last_synced_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+                     commute_start, commute_end, commute_days, last_synced_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
 ON CONFLICT (push_token) DO UPDATE SET
     home_nx = EXCLUDED.home_nx,
     home_ny = EXCLUDED.home_ny,
@@ -55,10 +56,11 @@ ON CONFLICT (push_token) DO UPDATE SET
     work_address = EXCLUDED.work_address,
     commute_start = EXCLUDED.commute_start,
     commute_end = EXCLUDED.commute_end,
+    commute_days = EXCLUDED.commute_days,
     last_synced_at = now();`
 	_, err := s.pool.Exec(ctx, q, d.PushToken, d.HomeNx, d.HomeNy,
 		d.WorkNx, d.WorkNy, d.HomeAddress, d.WorkAddress,
-		d.CommuteStart, d.CommuteEnd)
+		d.CommuteStart, d.CommuteEnd, d.CommuteDays)
 	return err
 }
 
@@ -129,6 +131,18 @@ func dueSlot(now time.Time, leadMinutes int, tick time.Duration, commuteStart, c
 	return ""
 }
 
+// dayOn 은 commute_days("일월화수목금토" 7자리, 1=on)에서 weekday(0=일…6=토)가 켜졌는지 본다.
+// 형식이 7자리가 아니면(구버전/손상) 평일 기준으로 폴백한다(월~금 on).
+func dayOn(days string, weekday int) bool {
+	if len(days) != 7 {
+		return weekday >= 1 && weekday <= 5 // 폴백: 월~금
+	}
+	if weekday < 0 || weekday > 6 {
+		return false
+	}
+	return days[weekday] == '1'
+}
+
 // hhmmToMinutes 는 "HHmm" 을 자정 기준 분(分)으로 바꾼다. 형식이 아니면 ok=false.
 func hhmmToMinutes(s string) (int, bool) {
 	if len(s) != 4 {
@@ -158,7 +172,7 @@ func (s *Store) DueDevices(ctx context.Context, now time.Time, leadMinutes int) 
 
 	// 아직 오늘 morning/evening 둘 다 발송한 기기는 후보에서 제외한다.
 	const q = `SELECT push_token, home_nx, home_ny, work_nx, work_ny,
-	                  commute_start, commute_end,
+	                  commute_start, commute_end, commute_days,
 	                  COALESCE(last_morning_push_date, ''), COALESCE(last_evening_push_date, '')
 	           FROM devices
 	           WHERE last_morning_push_date IS DISTINCT FROM $1
@@ -170,12 +184,21 @@ func (s *Store) DueDevices(ctx context.Context, now time.Time, leadMinutes int) 
 	}
 	defer rows.Close()
 
+	// 오늘 요일 인덱스(0=일 … 6=토). commute_days 의 해당 자리가 "1" 이어야 발송 대상.
+	weekday := int(now.In(kst).Weekday())
+
 	var due []DueDevice
 	for rows.Next() {
 		var d Device
 		if err := rows.Scan(&d.PushToken, &d.HomeNx, &d.HomeNy, &d.WorkNx, &d.WorkNy,
-			&d.CommuteStart, &d.CommuteEnd, &d.LastMorningPushDate, &d.LastEveningPushDate); err != nil {
+			&d.CommuteStart, &d.CommuteEnd, &d.CommuteDays,
+			&d.LastMorningPushDate, &d.LastEveningPushDate); err != nil {
 			return nil, err
+		}
+
+		// 출근일이 아닌 요일은 출/퇴근 모두 건너뛴다(spec: 선택한 출근일에만 발송).
+		if !dayOn(d.CommuteDays, weekday) {
+			continue
 		}
 
 		slot := dueSlot(now, leadMinutes, tickInterval, d.CommuteStart, d.CommuteEnd)
