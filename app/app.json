@@ -15,6 +15,13 @@
     },
     "plugins": [
       "expo-notifications"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f43a251c-5a7f-4a51-b198-591f9e766cdc"
+      },
+      "apiBaseUrl": "http://192.168.0.79:8080"
+    },
+    "owner": "twkim8548"
   }
 }

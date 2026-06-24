@@ -1,9 +1,12 @@
 // 서버 API 클라이언트. spec §3. 동기화는 항상 로컬 → DB 단방향.
+import Constants from "expo-constants";
 import type { ForecastResponse, Settings } from "./types";
 
-// 시뮬레이터는 Mac 의 localhost 를 공유하므로 그대로 동작한다.
-// 주의: 실기기에서 돌릴 때는 Mac 의 LAN IP (예: http://192.168.x.x:8080) 로 바꿔야 한다.
-const BASE_URL = "http://localhost:8080";
+// 실기기는 Mac 의 localhost 에 접근할 수 없으므로 LAN IP 로 서버를 가리켜야 한다.
+// app.json 의 extra.apiBaseUrl 로 주입(없으면 LAN IP 기본값). 시뮬레이터/실기기 공통.
+// 네트워크가 바뀌면(다른 와이파이) app.json 의 IP 만 갱신하면 된다.
+const BASE_URL: string =
+  Constants.expoConfig?.extra?.apiBaseUrl ?? "http://192.168.0.79:8080";
 
 // POST /sync — 설정이 바뀔 때마다 호출. 주소를 올리면 서버가 지오코딩/격자 변환.
 export async function sync(pushToken: string, s: Settings): Promise<void> {

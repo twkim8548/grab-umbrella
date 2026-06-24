@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { SafeAreaView, View, ActivityIndicator, StyleSheet } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Notifications from "expo-notifications";
 import MainScreen from "./src/screens/MainScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import PermissionPrimer from "./src/components/PermissionPrimer";
@@ -9,6 +10,17 @@ import {
   ensureNotificationPermission,
   getNotificationPermissionStatus,
 } from "./src/lib/push";
+
+// 앱이 포그라운드일 때도 알림을 배너+소리로 보이게 한다(SDK 53+ 기본은 숨김).
+// 모듈 로드 시 1회 등록. shouldShowBanner/List 는 SDK 54 필드(구 shouldShowAlert 대체).
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 // 화면 전환은 우선 단순 상태로. 화면이 늘면 react-navigation 도입 (spec §7.1: 메인/설정).
 type Route = "main" | "settings";
