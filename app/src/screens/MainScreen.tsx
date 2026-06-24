@@ -168,6 +168,9 @@ function ReadyView({
             onOpenSheet={onOpenSheet}
           />
         ))}
+
+        {/* 데이터 출처 표기. 공공데이터(기상청 단기예보) 이용 명시. */}
+        <Text style={styles.source}>기상청 제공</Text>
       </ScrollView>
 
       <HourlySheet
@@ -269,6 +272,7 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: "#fff", fontSize: 17, fontWeight: "600" },
   readyContainer: { flex: 1 },
   scrollContent: { paddingTop: 8, paddingBottom: 24 },
+  source: { fontSize: 12, color: "#C7C7CC", textAlign: "center", marginTop: 24 },
   // 섹션: 날짜 헤더 + 결론 + 카드. 섹션 간 넉넉한 간격.
   section: { marginBottom: 28 },
   dayWord: { fontSize: 24, fontWeight: "700" },

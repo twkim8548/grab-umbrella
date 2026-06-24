@@ -3,25 +3,31 @@ import {
   View,
   Text,
   Pressable,
-  TextInput,
   Switch,
   Alert,
   ActivityIndicator,
   StyleSheet,
   ScrollView,
+  Platform,
 } from "react-native";
+import DateTimePicker, {
+  type DateTimePickerEvent,
+} from "@react-native-community/datetimepicker";
 import AddressSearch from "../components/AddressSearch";
 import type { SelectedAddress } from "../components/AddressSearch";
 import { loadSettings, saveSettings } from "../storage/settings";
 import { ensureNotificationPermission, getPushToken } from "../lib/push";
 import { sync } from "../lib/api";
 import type { Settings } from "../lib/types";
+import { formatHHmm } from "../lib/format";
 
 // 설정 화면: 집/회사 주소, 출퇴근 시각, 알림 on/off. spec §7.1.
 // 저장 시 saveSettings(local) → sync(서버) 단방향. (spec §2)
 //
-// UX 메모: 시각 입력은 datetimepicker 대신 "HHmm" 텍스트 입력 + 검증으로 구현했다.
-// (네 자리 숫자, 00~23시 / 00~59분 범위 검증.) 추후 네이티브 휠 피커로 교체 가능.
+// UX 메모: 출퇴근 시각은 네이티브 시간 피커(@react-native-community/datetimepicker,
+// mode="time")로 입력한다. 행을 탭하면 iOS 는 compact 팝오버, Android 는 모달
+// 다이얼로그가 뜬다. 저장/서버 계약은 그대로 "HHmm" 문자열을 유지하므로,
+// 피커가 주는 Date 를 dateToHHmm 으로 변환해 상태에 담는다.
 export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   const [homeAddress, setHomeAddress] = useState("");
   const [workAddress, setWorkAddress] = useState("");
@@ -150,7 +156,6 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
           <View style={styles.separator} />
           <TimeRow label="퇴근" value={commuteEnd} onChange={setCommuteEnd} />
         </View>
-        <Text style={styles.footnote}>네 자리 24시간 형식 (예: 0830, 1900)</Text>
 
         {/* 알림 그룹 */}
         <Text style={styles.groupHeader}>알림</Text>
@@ -216,23 +221,68 @@ function TimeRow({
   value: string;
   onChange: (v: string) => void;
 }) {
+  // iOS 는 compact 디스플레이를 인라인으로 항상 렌더(행 우측 칩, 탭하면 팝오버).
+  // Android 는 모달 다이얼로그이므로 show 상태로 토글한다.
+  const [show, setShow] = useState(false);
+
+  const handleChange = (event: DateTimePickerEvent, date?: Date) => {
+    // Android: dismiss(취소) 시에도 콜백이 오므로 항상 닫는다.
+    if (Platform.OS === "android") setShow(false);
+    if (event.type === "set" && date) {
+      onChange(dateToHHmm(date));
+    }
+  };
+
+  if (Platform.OS === "ios") {
+    return (
+      <View style={styles.row}>
+        <Text style={styles.rowLabel}>{label}</Text>
+        <DateTimePicker
+          value={hhmmToDate(value)}
+          mode="time"
+          display="compact"
+          minuteInterval={5}
+          onChange={handleChange}
+        />
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.row}>
+    <Pressable style={styles.row} onPress={() => setShow(true)}>
       <Text style={styles.rowLabel}>{label}</Text>
-      <TextInput
-        style={styles.timeInput}
-        value={value}
-        onChangeText={(t) => onChange(t.replace(/[^0-9]/g, "").slice(0, 4))}
-        keyboardType="number-pad"
-        maxLength={4}
-        placeholder="0830"
-        placeholderTextColor="#C6C6C8"
-      />
-    </View>
+      <Text style={styles.rowValue}>{formatHHmm(value)}</Text>
+      {show && (
+        <DateTimePicker
+          value={hhmmToDate(value)}
+          mode="time"
+          display="default"
+          minuteInterval={5}
+          onChange={handleChange}
+        />
+      )}
+    </Pressable>
   );
 }
 
+// "HHmm" → Date (오늘 날짜에 그 시각). 형식이 깨졌으면 자정으로 폴백.
+function hhmmToDate(hhmm: string): Date {
+  const d = new Date();
+  const hh = Number(hhmm.slice(0, 2));
+  const mm = Number(hhmm.slice(2));
+  d.setHours(Number.isNaN(hh) ? 0 : hh, Number.isNaN(mm) ? 0 : mm, 0, 0);
+  return d;
+}
+
+// Date → "HHmm" (zero-pad). 저장/서버 계약 형식.
+function dateToHHmm(date: Date): string {
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${hh}${mm}`;
+}
+
 // "HHmm" 검증: 4자리 숫자, 00~23시 / 00~59분.
+// 피커 값은 항상 유효하지만, 저장 직전 방어용으로 남겨둔다.
 function isValidHHmm(v: string): boolean {
   if (!/^\d{4}$/.test(v)) return false;
   const hh = Number(v.slice(0, 2));
@@ -280,13 +330,6 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 17, color: "#000" },
   rowValue: { fontSize: 17, color: "#000", flexShrink: 1, marginLeft: 12, textAlign: "right" },
   rowPlaceholder: { color: "#007AFF" },
-  timeInput: {
-    fontSize: 17,
-    color: "#000",
-    minWidth: 80,
-    textAlign: "right",
-  },
-  footnote: { fontSize: 13, color: "#8E8E93", marginTop: 6, marginLeft: 4 },
   saveButton: {
     backgroundColor: "#007AFF",
     borderRadius: 12,
