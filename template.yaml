@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 우산챙겨? 백엔드 — api(Web Adapter, Function URL) + cron(Lambda, EventBridge Scheduler)
+
+# 구조(spec §5·§6):
+#  - ApiFunction(컨테이너, Web Adapter): /sync, /forecast 를 Function URL 로 노출.
+#  - CronFunction(컨테이너, lambda.Start 핸들러): EventBridge Scheduler 가 10분마다 직접
+#    invoke. cronjob.Run 으로 출발 30분 전 우산 푸시. Web Adapter 불필요(HTTP 서버 아님).
+#  - DB 는 외부 Neon. 비밀값은 배포 시 파라미터로(git 미포함).
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: Neon Postgres 연결 문자열
+  KmaServiceKey:
+    Type: String
+    NoEcho: true
+    Description: 기상청 서비스 키
+  KakaoRestApiKey:
+    Type: String
+    NoEcho: true
+    Description: 카카오 REST API 키
+  CronSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: (선택) api /cron/tick 수동 트리거 보호용 시크릿
+  PushLeadMinutes:
+    Type: String
+    Default: "30"
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Architectures: [arm64]   # Graviton: 콜드스타트·비용 유리
+
+Resources:
+  # ── api: HTTP 서버(Web Adapter). 앱이 Function URL 로 /sync·/forecast 호출. ──
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./server
+      DockerTag: latest
+    Properties:
+      FunctionName: grab-umbrella-api
+      PackageType: Image
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+          KMA_SERVICE_KEY: !Ref KmaServiceKey
+          KAKAO_REST_API_KEY: !Ref KakaoRestApiKey
+          CRON_SECRET: !Ref CronSecret
+          PUSH_LEAD_MINUTES: !Ref PushLeadMinutes
+
+  # ── cron: EventBridge Scheduler 가 10분마다 직접 invoke. 출발 30분 전 우산 푸시. ──
+  CronFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.cron
+      DockerContext: ./server
+      DockerTag: latest
+    Properties:
+      FunctionName: grab-umbrella-cron
+      PackageType: Image
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+          KMA_SERVICE_KEY: !Ref KmaServiceKey
+          PUSH_LEAD_MINUTES: !Ref PushLeadMinutes
+      Events:
+        Tick:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(10 minutes)
+            Name: grab-umbrella-cron-tick
+            Description: 매 10분 — 출발 30분 전 우산 푸시 (spec §5)
+
+Outputs:
+  FunctionUrl:
+    Description: 앱이 호출할 API 베이스 URL (/sync, /forecast)
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl

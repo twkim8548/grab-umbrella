@@ -1,0 +1,18 @@
+# 우산챙겨? cron Lambda — EventBridge Scheduler 가 직접 invoke 하는 함수.
+# Web Adapter 불필요(HTTP 서버 아님). cmd/cron 이 lambda.Start 로 핸들러를 등록한다.
+# AWS 제공 Go 런타임 베이스 이미지(provided.al2023)에 바이너리를 bootstrap 으로 둔다.
+# 빌드 컨텍스트는 server/ 디렉토리.
+
+# ── build stage ──
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# Lambda provided 런타임은 /var/runtime/bootstrap 또는 핸들러명 bootstrap 을 실행한다.
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/bootstrap ./cmd/cron
+
+# ── run stage ── AWS Lambda Go(provided.al2023) 베이스.
+FROM public.ecr.aws/lambda/provided:al2023
+COPY --from=build /out/bootstrap ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]

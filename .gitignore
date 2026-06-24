@@ -37,3 +37,7 @@ docs/kma-guide/*.pdf
 .idea/
 .vscode/
 *.swp
+
+# --- AWS SAM 빌드 산출물 ---
+.aws-sam/
+samconfig.toml

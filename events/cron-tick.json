@@ -1,0 +1,8 @@
+{
+  "version": "2.0",
+  "routeKey": "$default",
+  "rawPath": "/cron/tick",
+  "requestContext": { "http": { "method": "POST", "path": "/cron/tick" } },
+  "headers": { "x-cron-secret": "local-test-secret" },
+  "isBase64Encoded": false
+}
