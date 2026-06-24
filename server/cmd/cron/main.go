@@ -43,7 +43,7 @@ func main() {
 
 	lead := envInt("PUSH_LEAD_MINUTES", 30)
 
-	now := time.Now().In(kst)
+	now := nowKST()
 	today := now.Format("20060102")
 	log.Printf("cron: tick start (now=%s lead=%dm)", now.Format(time.RFC3339), lead)
 
@@ -86,6 +86,12 @@ func process(ctx context.Context, st *store.Store, wc *weather.Client, pc *push.
 	}
 
 	title, body, shouldSend := buildMessage(d.Slot, slot)
+	// 테스트용: CRON_FORCE_SEND=1 이면 비 여부와 무관하게 발송한다(전 구간 검증).
+	// 운영에선 미설정 → 평소처럼 비 올 때만 발송. force 시 문구가 비어 있으면 채운다.
+	if os.Getenv("CRON_FORCE_SEND") == "1" && !shouldSend {
+		title, body, shouldSend = forceMessage(d.Slot)
+		log.Printf("cron: ⚠ CRON_FORCE_SEND active — forcing send for %s", d.Slot)
+	}
 	if !shouldSend {
 		// 비 안 오면 발송 안 함(spec §5). 체감(옷차림) 기반 발송은 §9-7 미구현.
 		// TODO(§9-7): 어제 대비 체감 변화가 크면 우산 무관하게 발송.
@@ -134,14 +140,29 @@ func buildMessage(slot string, f weather.SlotForecast) (title, body string, shou
 	if !f.NeedUmbrella {
 		return "", "", false
 	}
-	title = "우산챙겨?"
+	title = "우산 챙기세요!"
 	switch slot {
 	case store.SlotMorning:
-		body = "오늘 출근길 비 소식, 우산 챙기세요"
+		body = "오늘 출근길에 비소식이 있어요"
 	case store.SlotEvening:
-		body = "오늘 퇴근길 비 소식, 우산 챙기세요"
+		body = "오늘 퇴근길에 비소식이 있어요"
 	default:
-		body = "비 소식, 우산 챙기세요"
+		body = "오늘 비소식이 있어요"
+	}
+	return title, body, true
+}
+
+// forceMessage 는 CRON_FORCE_SEND 테스트 시 비 여부와 무관하게 쓸 문구를 만든다.
+// 실제 발송 문구(buildMessage 의 비 케이스)와 동일하게 맞춘다.
+func forceMessage(slot string) (title, body string, shouldSend bool) {
+	title = "우산 챙기세요!"
+	switch slot {
+	case store.SlotMorning:
+		body = "오늘 출근길에 비소식이 있어요"
+	case store.SlotEvening:
+		body = "오늘 퇴근길에 비소식이 있어요"
+	default:
+		body = "오늘 비소식이 있어요"
 	}
 	return title, body, true
 }
@@ -158,6 +179,21 @@ func maskToken(token string) string {
 		return token
 	}
 	return token[:n] + "…"
+}
+
+// nowKST 는 cron 의 기준 시각을 반환한다. 평상시 실제 현재시각(KST)이지만,
+// 테스트용으로 CRON_NOW("2006-01-02 15:04")가 설정되면 그 시각을 KST 로 해석한다.
+// 운영에선 미설정이므로 영향 없다(시간대별 발송 흐름 수동 검증용).
+func nowKST() time.Time {
+	if v := os.Getenv("CRON_NOW"); v != "" {
+		t, err := time.ParseInLocation("2006-01-02 15:04", v, kst)
+		if err != nil {
+			log.Fatalf("cron: invalid CRON_NOW=%q (want \"2006-01-02 15:04\"): %v", v, err)
+		}
+		log.Printf("cron: ⚠ CRON_NOW override active → %s", t.Format(time.RFC3339))
+		return t
+	}
+	return time.Now().In(kst)
 }
 
 func env(key, def string) string {
