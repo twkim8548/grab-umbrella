@@ -77,7 +77,7 @@ func process(ctx context.Context, st *store.Store, wc *weather.Client, pc *push.
 		return err
 	}
 
-	slot, ok := weather.SlotForecastAt(items, fcstDate, fcstTime)
+	_, ok := weather.SlotForecastAt(items, fcstDate, fcstTime)
 	if !ok {
 		log.Printf("cron: device %s slot=%s no forecast for %s %s — skip",
 			maskToken(d.PushToken), d.Slot, fcstDate, fcstTime)
@@ -85,7 +85,15 @@ func process(ctx context.Context, st *store.Store, wc *weather.Client, pc *push.
 		return nil
 	}
 
-	title, body, shouldSend := buildMessage(d.Slot, slot)
+	// 우산 판정은 출퇴근 윈도우 전체 기준(앱 /forecast 와 동일). 퇴근 정시는 맑아도
+	// 윈도우 안 소나기가 있으면 발송한다. 출근=morning, 퇴근=evening 비대칭 윈도우.
+	before, after := weather.MorningWindow()
+	if d.Slot == store.SlotEvening {
+		before, after = weather.EveningWindow()
+	}
+	needUmbrella := weather.WindowNeedUmbrella(items, fcstDate, fcstTime, before, after)
+
+	title, body, shouldSend := buildMessage(d.Slot, needUmbrella)
 	// 테스트용: CRON_FORCE_SEND=1 이면 비 여부와 무관하게 발송한다(전 구간 검증).
 	// 운영에선 미설정 → 평소처럼 비 올 때만 발송. force 시 문구가 비어 있으면 채운다.
 	if os.Getenv("CRON_FORCE_SEND") == "1" && !shouldSend {
@@ -136,11 +144,11 @@ func fetchForecast(ctx context.Context, wc *weather.Client, nx, ny int,
 
 // buildMessage 는 슬롯 예보를 한 줄 알림으로 압축한다(spec §5). 우산이 필요할 때만
 // 발송한다(shouldSend). 비 안 오면 shouldSend=false 로 발송을 거른다.
-func buildMessage(slot string, f weather.SlotForecast) (title, body string, shouldSend bool) {
-	if !f.NeedUmbrella {
+func buildMessage(slot string, needUmbrella bool) (title, body string, shouldSend bool) {
+	if !needUmbrella {
 		return "", "", false
 	}
-	title = "우산 챙기세요!"
+	title = "우산 챙기세요! ☔️"
 	switch slot {
 	case store.SlotMorning:
 		body = "오늘 출근길에 비소식이 있어요"
@@ -155,7 +163,7 @@ func buildMessage(slot string, f weather.SlotForecast) (title, body string, shou
 // forceMessage 는 CRON_FORCE_SEND 테스트 시 비 여부와 무관하게 쓸 문구를 만든다.
 // 실제 발송 문구(buildMessage 의 비 케이스)와 동일하게 맞춘다.
 func forceMessage(slot string) (title, body string, shouldSend bool) {
-	title = "우산 챙기세요!"
+	title = "우산 챙기세요! ☔️"
 	switch slot {
 	case store.SlotMorning:
 		body = "오늘 출근길에 비소식이 있어요"

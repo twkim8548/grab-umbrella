@@ -1,6 +1,9 @@
 package weather
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // 시간별 흐름 윈도우 (spec §3·§7.1). 명세상 "와이어프레임 시 확정"이라 미정값이므로
 // 상수로 분리해 나중에 조정 가능하게 둔다. 단기예보는 1시간 단위이므로 시간 단위로 잡는다.
@@ -32,7 +35,11 @@ type SlotCard struct {
 	TempC        int           `json:"tempC"`
 	PopPct       int           `json:"popPct"`
 	NeedUmbrella bool          `json:"needUmbrella"`
-	Hourly       []HourlyPoint `json:"hourly"`
+	// UmbrellaReason 은 카드 대표값(anchor)과 우산 결론이 어긋날 때의 근거 문구다.
+	// 예: anchor 18시는 맑지만 윈도우 안 19시부터 소나기 → "19시부터 소나기".
+	// anchor 자체가 이미 비라 대표값과 결론이 일치하면 빈 문자열(부제목 불필요).
+	UmbrellaReason string        `json:"umbrellaReason"`
+	Hourly         []HourlyPoint `json:"hourly"`
 }
 
 // BuildSlotCard 는 파싱된 items 에서 한 슬롯 카드(예보 + 시간별 흐름)를 조립한다.
@@ -48,14 +55,63 @@ func BuildSlotCard(items []FcstItem, anchorDate, anchorTime string, before, afte
 	if hourly == nil {
 		hourly = []HourlyPoint{}
 	}
+	// 우산 판정은 anchor 정시 1점이 아니라 출퇴근 윈도우(before~after) 전체 기준이다.
+	// 퇴근 19시는 맑아도 19~20시에 소나기가 있으면 챙겨야 하므로, 윈도우 안 어느
+	// 한 시점이라도 우산이 필요하면 true 로 본다(사용자 의도: 하루 단위 우산 판단).
+	need, reasonHour, reasonPty := windowScan(items, anchorDate, anchorTime, before, after)
+
+	// 부제목(근거)은 대표값(anchor)과 결론이 어긋날 때만 — 즉 anchor 는 비가 아닌데
+	// 윈도우 안 다른 시점 때문에 우산이 필요할 때만 채운다. anchor 가 이미 비면
+	// 카드 대표값이 그 자체로 근거이므로 빈 문자열로 둔다(중복/혼란 방지).
+	reason := ""
+	if need && !slot.NeedUmbrella {
+		reason = umbrellaReasonText(reasonHour, reasonPty)
+	}
+
 	return SlotCard{
-		SkyText:      slot.SkyText,
-		PtyText:      slot.PtyText,
-		TempC:        slot.TempC,
-		PopPct:       slot.PopPct,
-		NeedUmbrella: slot.NeedUmbrella,
-		Hourly:       hourly,
+		SkyText:        slot.SkyText,
+		PtyText:        slot.PtyText,
+		TempC:          slot.TempC,
+		PopPct:         slot.PopPct,
+		NeedUmbrella:   need,
+		UmbrellaReason: reason,
+		Hourly:         hourly,
 	}, true
+}
+
+// windowScan 은 출퇴근 윈도우(anchor 기준 before~after 시간)를 훑어, 우산이 필요한
+// 첫 시점을 찾는다. need=우산 필요 여부, hour=첫 시점 시각("HHmm"), pty=그 시점 강수형태.
+// 각 시점 판정은 SlotForecastAt 의 NeedUmbrella(PTY/POP)를 재사용한다. anchor 자체도 포함.
+func windowScan(items []FcstItem, anchorDate, anchorTime string, before, after int) (need bool, hour, pty string) {
+	hh, _ := parseHHmm(anchorTime)
+	anchor := time.Date(yearOf(anchorDate), monthOf(anchorDate), dayOf(anchorDate), hh, 0, 0, 0, kst)
+	for off := -before; off <= after; off++ {
+		t := anchor.Add(time.Duration(off) * time.Hour)
+		if slot, ok := SlotForecastAt(items, t.Format("20060102"), t.Format("1504")); ok && slot.NeedUmbrella {
+			return true, t.Format("1504"), slot.PtyText
+		}
+	}
+	return false, "", ""
+}
+
+// WindowNeedUmbrella 는 윈도우 안 어느 한 시점이라도 우산이 필요하면 true 를 반환한다.
+// /forecast(BuildSlotCard)와 cron 이 동일 기준으로 판정하도록 공개한다(windowScan 의 얇은 래퍼).
+func WindowNeedUmbrella(items []FcstItem, anchorDate, anchorTime string, before, after int) bool {
+	need, _, _ := windowScan(items, anchorDate, anchorTime, before, after)
+	return need
+}
+
+// umbrellaReasonText 는 "HHmm"+강수형태로 카드 부제목을 만든다. 예: ("1900","소나기") → "19시부터 소나기".
+// 분(分)은 정시 슬롯이라 버리고 시(時)만 쓴다. 강수형태가 비면 "비", 소나기면 "소나기" 등 그대로 사용.
+func umbrellaReasonText(hour, pty string) string {
+	if hour == "" {
+		return ""
+	}
+	hh, _ := parseHHmm(hour)
+	if pty == "" || pty == "없음" {
+		pty = "비"
+	}
+	return fmt.Sprintf("%d시부터 %s", hh, pty)
 }
 
 // MorningWindow / EveningWindow 는 비대칭 윈도우 상수를 노출한다(핸들러에서 사용).

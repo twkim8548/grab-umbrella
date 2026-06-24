@@ -55,14 +55,25 @@ func main() {
 		fmt.Printf("  %s\n", k)
 	}
 
-	// 오늘 0700 슬롯이 실제로 잡히는지.
-	today := time.Now().In(kst).Format("20060102")
-	f, ok := weather.SlotForecastAt(items, today, slot)
-	fmt.Printf("\nSlotForecastAt(%s, %s) → ok=%v", today, slot, ok)
+	// 특정 날짜의 슬롯 점검. 기본은 오늘, 인자 5번째로 날짜(YYYYMMDD) 지정 가능.
+	date := time.Now().In(kst).Format("20060102")
+	if len(os.Args) >= 5 {
+		date = os.Args[4]
+	}
+	f, ok := weather.SlotForecastAt(items, date, slot)
+	fmt.Printf("\n[anchor 1점] SlotForecastAt(%s, %s) → ok=%v", date, slot, ok)
 	if ok {
 		fmt.Printf("  needUmbrella=%v pop=%d%% sky=%q pty=%q\n", f.NeedUmbrella, f.PopPct, f.SkyText, f.PtyText)
 	} else {
 		fmt.Println("  (해당 슬롯 없음)")
+	}
+
+	// 윈도우 판정(퇴근=evening 1전~2후 기준)과 그 안의 시간별 흐름을 함께 보여준다.
+	eb, ea := weather.EveningWindow()
+	win := weather.WindowNeedUmbrella(items, date, slot, eb, ea)
+	fmt.Printf("[윈도우] EveningWindow(%d전~%d후) WindowNeedUmbrella(%s,%s) → %v\n", eb, ea, date, slot, win)
+	for _, hp := range weather.HourlySlice(items, date, slot, eb, ea) {
+		fmt.Printf("    %s  pop=%2d%%  pty=%q\n", hp.Time, hp.PopPct, hp.PtyText)
 	}
 }
 

@@ -257,6 +257,125 @@ func TestBuildSlotCard(t *testing.T) {
 	}
 }
 
+// TestWindowNeedUmbrella 는 우산 판정이 anchor 1점이 아니라 윈도우 전체 기준임을 검증한다.
+// 회귀: 퇴근 19시는 맑아도 20시 소나기가 있으면 우산 필요(사용자 보고 케이스).
+func TestWindowNeedUmbrella(t *testing.T) {
+	// 한 시각의 SKY/PTY/POP 를 채우는 헬퍼.
+	build := func(set func(add func(tm, cat, val string))) []FcstItem {
+		var items []FcstItem
+		add := func(tm, cat, val string) {
+			items = append(items, FcstItem{FcstDate: "20260623", FcstTime: tm, Category: cat, FcstValue: val, Nx: 60, Ny: 127})
+		}
+		set(add)
+		return items
+	}
+
+	t.Run("anchor dry but shower later in window → need", func(t *testing.T) {
+		// 퇴근 1900 정시는 맑음(PTY 0, POP 0), 2000 에 소나기(PTY 4). evening 윈도우 1전~2후.
+		items := build(func(add func(tm, cat, val string)) {
+			for _, h := range []string{"1800", "1900", "2100"} {
+				add(h, "PTY", "0")
+				add(h, "POP", "0")
+			}
+			add("2000", "PTY", "4") // 소나기
+			add("2000", "POP", "60")
+		})
+		if !WindowNeedUmbrella(items, "20260623", "1900", eveningHoursBefore, eveningHoursAfter) {
+			t.Error("expected need=true: shower at 2000 within evening window")
+		}
+		// 같은 데이터라도 anchor 1점만 보면 false 여야(대조군).
+		if slot, _ := SlotForecastAt(items, "20260623", "1900"); slot.NeedUmbrella {
+			t.Error("sanity: anchor 1900 alone should be dry")
+		}
+	})
+
+	t.Run("all dry in window → no need", func(t *testing.T) {
+		items := build(func(add func(tm, cat, val string)) {
+			for _, h := range []string{"1800", "1900", "2000", "2100"} {
+				add(h, "PTY", "0")
+				add(h, "POP", "10")
+			}
+		})
+		if WindowNeedUmbrella(items, "20260623", "1900", eveningHoursBefore, eveningHoursAfter) {
+			t.Error("expected need=false when whole window is dry")
+		}
+	})
+
+	t.Run("shower outside window not counted", func(t *testing.T) {
+		// evening 윈도우는 1전~2후(1800~2100). 2200 소나기는 범위 밖 → 무시.
+		items := build(func(add func(tm, cat, val string)) {
+			for _, h := range []string{"1800", "1900", "2000", "2100"} {
+				add(h, "PTY", "0")
+				add(h, "POP", "0")
+			}
+			add("2200", "PTY", "4")
+			add("2200", "POP", "80")
+		})
+		if WindowNeedUmbrella(items, "20260623", "1900", eveningHoursBefore, eveningHoursAfter) {
+			t.Error("expected need=false: 2200 shower is outside evening window")
+		}
+	})
+}
+
+// TestBuildSlotCardUmbrellaReason 은 대표값과 결론이 어긋날 때만 근거 부제목이 붙는지 검증한다.
+func TestBuildSlotCardUmbrellaReason(t *testing.T) {
+	build := func(set func(add func(tm, cat, val string))) []FcstItem {
+		var items []FcstItem
+		add := func(tm, cat, val string) {
+			items = append(items, FcstItem{FcstDate: "20260623", FcstTime: tm, Category: cat, FcstValue: val, Nx: 60, Ny: 127})
+		}
+		set(add)
+		return items
+	}
+
+	t.Run("anchor dry, shower later → reason set", func(t *testing.T) {
+		items := build(func(add func(tm, cat, val string)) {
+			for _, h := range []string{"1700", "1800", "2100"} {
+				add(h, "PTY", "0")
+				add(h, "POP", "0")
+				add(h, "SKY", "1")
+				add(h, "TMP", "22")
+			}
+			for _, h := range []string{"1900", "2000"} {
+				add(h, "PTY", "4") // 소나기
+				add(h, "POP", "60")
+				add(h, "TMP", "21")
+			}
+		})
+		// 퇴근 anchor 1800(맑음), evening 윈도우 1전~2후 → 1900 소나기 포착.
+		card, ok := BuildSlotCard(items, "20260623", "1800", eveningHoursBefore, eveningHoursAfter)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if !card.NeedUmbrella {
+			t.Error("expected needUmbrella=true (shower in window)")
+		}
+		if card.UmbrellaReason != "19시부터 소나기" {
+			t.Errorf("UmbrellaReason = %q; want %q", card.UmbrellaReason, "19시부터 소나기")
+		}
+	})
+
+	t.Run("anchor itself rains → no reason (no contradiction)", func(t *testing.T) {
+		items := build(func(add func(tm, cat, val string)) {
+			for _, h := range []string{"1700", "1800", "1900", "2000"} {
+				add(h, "PTY", "1") // 비
+				add(h, "POP", "80")
+				add(h, "TMP", "20")
+			}
+		})
+		card, ok := BuildSlotCard(items, "20260623", "1800", eveningHoursBefore, eveningHoursAfter)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if !card.NeedUmbrella {
+			t.Error("expected needUmbrella=true")
+		}
+		if card.UmbrellaReason != "" {
+			t.Errorf("UmbrellaReason = %q; want empty (anchor already rainy)", card.UmbrellaReason)
+		}
+	})
+}
+
 func TestPrecipText(t *testing.T) {
 	cases := map[string]string{
 		"":            "강수없음",
