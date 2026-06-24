@@ -10,6 +10,7 @@ export default function CommuteCard({
   time,
   dong,
   data,
+  past,
   onPress,
 }: {
   label: string; // "출근" | "퇴근"
@@ -17,9 +18,30 @@ export default function CommuteCard({
   time: string; // "8:30" 표시용
   dong?: string; // 동네 (예: "역삼동"). 빈 문자열이면 표시 생략.
   data: SlotForecast | null;
+  past?: boolean; // 이미 지난 시점(예보 없음). 흐리게 "지남" 표시.
   onPress: () => void;
 }) {
   const hasHourly = !!data?.hourly && data.hourly.length > 0;
+
+  // 이미 지난 시점: 예보가 없으므로 흐린 비활성 카드로 자리만 채운다.
+  if (past) {
+    return (
+      <View style={[styles.card, styles.cardPast]}>
+        <View style={styles.headerRow}>
+          <Text style={styles.label}>{label}</Text>
+          <Text style={styles.time}>{time}</Text>
+        </View>
+        {dong ? (
+          <Text style={styles.dong} numberOfLines={1}>
+            {dong}
+          </Text>
+        ) : null}
+        <View style={styles.pastFill}>
+          <Text style={styles.pastText}>지났어요</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <Pressable
@@ -83,4 +105,8 @@ const styles = StyleSheet.create({
   meta: { fontSize: 13, color: "#3C3C43", marginTop: 2 },
   hint: { fontSize: 12, color: "#007AFF", marginTop: 12 },
   hintDisabled: { color: "#C7C7CC" },
+  // 지난 시점 카드: 흐리게, 자리만 채움.
+  cardPast: { opacity: 0.5 },
+  pastFill: { flex: 1, justifyContent: "center", paddingVertical: 24 },
+  pastText: { fontSize: 15, color: "#8E8E93" },
 });

@@ -4,6 +4,7 @@ import {
   Text,
   Pressable,
   ActivityIndicator,
+  ScrollView,
   StyleSheet,
 } from "react-native";
 import CommuteCard from "../components/CommuteCard";
@@ -14,9 +15,9 @@ import { getForecast, NOT_REGISTERED } from "../lib/api";
 import { formatHHmm } from "../lib/format";
 import type { DayForecast, ForecastResponse, Settings, SlotForecast } from "../lib/types";
 
-// 메인 화면: 상단 결론(한 줄/두 줄) + 출근/퇴근 두 카드.
+// 메인 화면: "날짜 섹션" 패러다임. 각 섹션 = [날짜 헤더 + 그 날 우산 결론] + [그 날 살아있는 카드].
 // docs/design-main-screen.md "시간대별 처리". 우산 판정은 하루 단위(그 날 살아있는 슬롯 중 하나라도 비).
-// 한 줄(오늘 또는 내일) / 두 줄(출퇴근 사이: 오늘+내일)은 살아있는 슬롯 데이터로 결정.
+// 섹션 개수만 구간에 따라 1~2개로 달라진다(출근 전=오늘1, 출퇴근 사이=오늘+내일, 퇴근 후=내일1).
 type LoadState =
   | { kind: "loading" }
   | { kind: "no-settings" }
@@ -24,10 +25,14 @@ type LoadState =
   | { kind: "error"; message: string }
   | { kind: "ready"; settings: Settings; forecast: ForecastResponse };
 
+type DayWord = "오늘" | "내일";
+type SlotKey = "morning" | "evening";
+// 시트 식별: 어느 섹션(날짜)의 어느 슬롯이 열렸는가. null 이면 닫힘.
+type SheetTarget = { dayWord: DayWord; slotKey: SlotKey } | null;
+
 export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  // 어느 슬롯의 시간별 시트가 열렸는가. null 이면 닫힘.
-  const [sheetSlot, setSheetSlot] = useState<null | "morning" | "evening">(null);
+  const [sheet, setSheet] = useState<SheetTarget>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -97,168 +102,150 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
         <ReadyView
           forecast={state.forecast}
           settings={state.settings}
-          sheetSlot={sheetSlot}
-          onOpenSheet={(slot) => setSheetSlot(slot)}
-          onCloseSheet={() => setSheetSlot(null)}
+          sheet={sheet}
+          onOpenSheet={(dayWord, slotKey) => setSheet({ dayWord, slotKey })}
+          onCloseSheet={() => setSheet(null)}
         />
       )}
     </View>
   );
 }
 
-// 출근/퇴근 카드용으로 "지금 시점 기준 다음 시점"을 고른다.
-// today 슬롯이 살아있으면(=null 아님) 그것(오늘), 아니면 tomorrow 슬롯(내일).
-// day 라벨은 시각 계산이 아니라 어느 날 슬롯을 골랐는지로 정한다.
-function pickNextSlot(
-  forecast: ForecastResponse,
-  key: "morning" | "evening"
-): { data: SlotForecast | null; day: "오늘" | "내일" } {
-  const todaySlot = forecast.today[key];
-  if (todaySlot) return { data: todaySlot, day: "오늘" };
-  return { data: forecast.tomorrow[key], day: "내일" };
+// 표시할 날짜 섹션 목록을 데이터로 결정한다.
+//  - 출근 전: today.morning 살아있음 → "오늘"만(내일 안 보임).
+//  - 출퇴근 사이: today.morning=null(출근 지남) + today.evening 살아있음 + tomorrow 살아있음 → "오늘"+"내일".
+//  - 퇴근 후: today 전부 null → "내일"만.
+function pickSections(forecast: ForecastResponse): DayWord[] {
+  const { today, tomorrow } = forecast;
+  const todayAlive = !!(today.morning || today.evening);
+  const tomorrowAlive = !!(tomorrow.morning || tomorrow.evening);
+
+  const sections: DayWord[] = [];
+  if (todayAlive) {
+    sections.push("오늘");
+    // 오늘이 "완전한 하루"가 아니면(출근 지남) 다가오는 내일도 관심사.
+    if (!today.morning && tomorrowAlive) sections.push("내일");
+  } else {
+    sections.push("내일");
+  }
+  return sections;
 }
 
 function ReadyView({
   forecast,
   settings,
-  sheetSlot,
+  sheet,
   onOpenSheet,
   onCloseSheet,
 }: {
   forecast: ForecastResponse;
   settings: Settings;
-  sheetSlot: null | "morning" | "evening";
-  onOpenSheet: (slot: "morning" | "evening") => void;
+  sheet: SheetTarget;
+  onOpenSheet: (dayWord: DayWord, slotKey: SlotKey) => void;
   onCloseSheet: () => void;
 }) {
-  // 카드: 지금 기준 "다음 출근/다음 퇴근" (today 우선, 없으면 tomorrow).
-  const next = {
-    morning: pickNextSlot(forecast, "morning"),
-    evening: pickNextSlot(forecast, "evening"),
-  };
+  const sections = pickSections(forecast);
+  const dayOf = (w: DayWord): DayForecast => (w === "오늘" ? forecast.today : forecast.tomorrow);
 
-  const message = mainMessage(forecast);
+  // 열린 시트의 hourly/title 은 섹션×슬롯 식별자로 역참조.
+  const sheetData: SlotForecast | null = sheet ? dayOf(sheet.dayWord)[sheet.slotKey] : null;
+  const sheetTitle = sheet
+    ? `${sheet.dayWord} ${sheet.slotKey === "morning" ? "출근" : "퇴근"}`
+    : "";
 
   return (
     <View style={styles.readyContainer}>
-      {/* 상단 결론: 한 줄(큰 결론) 또는 두 줄(오늘+내일 각각). */}
-      <View style={styles.conclusion}>
-        <Text style={styles.conclusionIcon}>{message.needUmbrella ? "☔️" : "🌤"}</Text>
-        {message.lines.length === 1 ? (
-          <>
-            <Text style={styles.conclusionText}>{message.lines[0].conclusion}</Text>
-            <Text style={styles.subtitle}>{message.lines[0].subtitle}</Text>
-          </>
-        ) : (
-          <View style={styles.twoLines}>
-            {message.lines.map((line) => (
-              <View key={line.dayWord} style={styles.lineBlock}>
-                <Text style={styles.lineConclusion}>{line.conclusion}</Text>
-                <Text style={styles.lineSubtitle}>{line.subtitle}</Text>
-              </View>
-            ))}
-          </View>
-        )}
-      </View>
-
-      {/* 하단 출근/퇴근 두 카드: 결론 아래 적절한 위치에 */}
-      <View style={styles.cards}>
-        <CommuteCard
-          label="출근"
-          day={next.morning.day}
-          time={formatHHmm(settings.commuteStart)}
-          dong={settings.homeDong}
-          data={next.morning.data}
-          onPress={() => onOpenSheet("morning")}
-        />
-        <View style={{ width: 12 }} />
-        <CommuteCard
-          label="퇴근"
-          day={next.evening.day}
-          time={formatHHmm(settings.commuteEnd)}
-          dong={settings.workDong}
-          data={next.evening.data}
-          onPress={() => onOpenSheet("evening")}
-        />
-      </View>
-
-      <View style={styles.bottomSpacer} />
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {sections.map((dayWord) => (
+          <DaySection
+            key={dayWord}
+            dayWord={dayWord}
+            dayForecast={dayOf(dayWord)}
+            settings={settings}
+            onOpenSheet={onOpenSheet}
+          />
+        ))}
+      </ScrollView>
 
       <HourlySheet
-        visible={sheetSlot === "morning"}
-        title="출근 시간대"
-        hourly={next.morning.data?.hourly ?? null}
-        onClose={onCloseSheet}
-      />
-      <HourlySheet
-        visible={sheetSlot === "evening"}
-        title="퇴근 시간대"
-        hourly={next.evening.data?.hourly ?? null}
+        visible={!!sheet}
+        title={sheetTitle}
+        hourly={sheetData?.hourly ?? null}
         onClose={onCloseSheet}
       />
     </View>
   );
 }
 
-interface MessageLine {
-  dayWord: "오늘" | "내일";
-  conclusion: string; // "오늘은 우산 챙기세요"
-  subtitle: string; // 부연 ("출근길에 비가 와요" 등)
-}
+// 한 날짜 섹션: 날짜 헤더 + 결론 한 줄 + 그 날 살아있는 카드들(가로 배치).
+// 우산 판정 = 그 날 살아있는 슬롯 중 하나라도 needUmbrella.
+function DaySection({
+  dayWord,
+  dayForecast,
+  settings,
+  onOpenSheet,
+}: {
+  dayWord: DayWord;
+  dayForecast: DayForecast;
+  settings: Settings;
+  onOpenSheet: (dayWord: DayWord, slotKey: SlotKey) => void;
+}) {
+  const needUmbrella =
+    (dayForecast.morning?.needUmbrella ?? false) ||
+    (dayForecast.evening?.needUmbrella ?? false);
 
-// 한 날(today/tomorrow)의 결론 한 줄을 만든다.
-// 우산 판정 = 그 날 살아있는(null 아닌) 슬롯 중 하나라도 needUmbrella.
-// 부연: 어느 시점이 비인지(출근길/퇴근길/하루 종일/안 비).
-function dayConclusion(dayWord: "오늘" | "내일", day: DayForecast): MessageLine {
-  const m = day.morning?.needUmbrella ?? false;
-  const e = day.evening?.needUmbrella ?? false;
-  const needUmbrella = m || e;
+  // 카드 자리: 출근/퇴근 두 칸을 항상 둔다.
+  //  - 오늘 섹션: 지난 슬롯(null)은 흐린 "지났어요" 카드로 자리를 채워 두 칸 균형 유지.
+  //  - 내일 섹션: 지난 게 없으므로 살아있는 슬롯만(보통 둘 다).
+  const slots: { key: SlotKey; label: string; time: string; dong: string }[] = [
+    { key: "morning", label: "출근", time: formatHHmm(settings.commuteStart), dong: settings.homeDong },
+    { key: "evening", label: "퇴근", time: formatHHmm(settings.commuteEnd), dong: settings.workDong },
+  ];
+  const isToday = dayWord === "오늘";
+  // 그릴 슬롯: 데이터 있으면 정상, 없으면 오늘 섹션에서만 past 카드로.
+  const cards = slots
+    .map((s) => {
+      const data = dayForecast[s.key];
+      if (data) return { ...s, data, past: false };
+      if (isToday) return { ...s, data: null as SlotForecast | null, past: true };
+      return null;
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+  const single = cards.length === 1;
 
-  const conclusion = needUmbrella
-    ? `${dayWord}은 우산 챙기세요`
-    : `${dayWord}은 우산 필요 없어요`;
+  return (
+    <View style={styles.section}>
+      <Text style={styles.dayWord}>{dayWord}</Text>
+      <View style={styles.conclusionRow}>
+        <Text style={styles.conclusionIcon}>{needUmbrella ? "☔️" : "🌤"}</Text>
+        <Text style={styles.conclusionText}>
+          {needUmbrella ? "우산 챙기세요" : "우산 필요 없어요"}
+        </Text>
+      </View>
 
-  let subtitle: string;
-  if (m && e) subtitle = `${dayWord} 하루 종일 비가 와요`;
-  else if (m) subtitle = `${dayWord} 출근길엔 비가 와요`;
-  else if (e) subtitle = `${dayWord} 퇴근길엔 비가 와요`;
-  else subtitle = "우산 없이 가벼워요";
-
-  return { dayWord, conclusion, subtitle };
-}
-
-// 상단 메시지를 만든다. 데이터(살아있는 슬롯)로 한 줄/두 줄을 결정한다.
-//  - 출근 전: today.morning + today.evening 살아있음 → 오늘 한 줄.
-//  - 출퇴근 사이: today.morning=null(출근 지남) + today.evening 살아있음 + tomorrow 살아있음 → 두 줄(오늘+내일).
-//  - 퇴근 후: today 전부 null, tomorrow 만 살아있음 → 내일 한 줄.
-// needUmbrella: 보여주는 줄들 중 하나라도 비면 큰 아이콘 ☔️.
-function mainMessage(forecast: ForecastResponse): {
-  lines: MessageLine[];
-  needUmbrella: boolean;
-} {
-  const { today, tomorrow } = forecast;
-  const todayAlive = !!(today.morning || today.evening);
-  const tomorrowAlive = !!(tomorrow.morning || tomorrow.evening);
-
-  // 출퇴근 사이(애매 구간): 출근 지나(today.morning=null) 오늘 일부만 남고 내일도 관심사 → 두 줄.
-  const twoLines = todayAlive && tomorrowAlive && !today.morning;
-
-  let lines: MessageLine[];
-  if (twoLines) {
-    lines = [dayConclusion("오늘", today), dayConclusion("내일", tomorrow)];
-  } else if (todayAlive) {
-    lines = [dayConclusion("오늘", today)];
-  } else {
-    lines = [dayConclusion("내일", tomorrow)];
-  }
-
-  const dayNeedsUmbrella = (d: DayForecast) =>
-    (d.morning?.needUmbrella ?? false) || (d.evening?.needUmbrella ?? false);
-  const needUmbrella = twoLines
-    ? dayNeedsUmbrella(today) || dayNeedsUmbrella(tomorrow)
-    : dayNeedsUmbrella(todayAlive ? today : tomorrow);
-
-  return { lines, needUmbrella };
+      {/* 카드 1개면 가로 절반만 차지(혼자 꽉 차지 않게), 2개면 동등 분할. */}
+      <View style={styles.cards}>
+        {cards.map((c, i) => (
+          <View
+            key={c.key}
+            style={[styles.cardSlot, single && styles.cardSlotSingle, i > 0 && styles.cardGap]}
+          >
+            <CommuteCard
+              label={c.label}
+              time={c.time}
+              dong={c.dong}
+              data={c.data}
+              past={c.past}
+              onPress={() => onOpenSheet(dayWord, c.key)}
+            />
+          </View>
+        ))}
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -281,25 +268,22 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: { color: "#fff", fontSize: 17, fontWeight: "600" },
   readyContainer: { flex: 1 },
-  // 결론은 화면 위쪽~중앙(황금비 지점)에 오도록 위 여백을 더 크게.
-  conclusion: {
-    flex: 0.62,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  conclusionIcon: { fontSize: 72 },
-  conclusionText: { fontSize: 34, fontWeight: "700", marginTop: 16, textAlign: "center" },
-  subtitle: { fontSize: 17, color: "#8E8E93", marginTop: 8, textAlign: "center" },
-  // 두 줄(오늘+내일): 한 줄 큰 결론보다 절제된 중간 크기로 균형. HIG 톤.
-  twoLines: { marginTop: 16, alignItems: "center", gap: 16 },
-  lineBlock: { alignItems: "center" },
-  lineConclusion: { fontSize: 24, fontWeight: "700", textAlign: "center" },
-  lineSubtitle: { fontSize: 15, color: "#8E8E93", marginTop: 4, textAlign: "center" },
-  // 카드는 결론 바로 아래에 자리. 두 카드 높이는 CommuteCard 고정 높이로 동일.
-  cards: {
+  scrollContent: { paddingTop: 8, paddingBottom: 24 },
+  // 섹션: 날짜 헤더 + 결론 + 카드. 섹션 간 넉넉한 간격.
+  section: { marginBottom: 28 },
+  dayWord: { fontSize: 24, fontWeight: "700" },
+  conclusionRow: {
     flexDirection: "row",
-    alignItems: "stretch",
+    alignItems: "center",
+    marginTop: 6,
+    marginBottom: 14,
   },
-  // 카드 아래 남는 공간(결론을 위로 끌어올리는 균형추).
-  bottomSpacer: { flex: 0.38 },
+  conclusionIcon: { fontSize: 28, marginRight: 8 },
+  conclusionText: { fontSize: 20, fontWeight: "600", color: "#3C3C43" },
+  // 카드 행: 살아있는 카드들을 가로로.
+  cards: { flexDirection: "row", alignItems: "stretch" },
+  cardSlot: { flex: 1 },
+  // 카드 1개일 때는 가로 절반만 차지(혼자 화면을 꽉 채우지 않게).
+  cardSlotSingle: { flex: 0, width: "50%" },
+  cardGap: { marginLeft: 12 },
 });
