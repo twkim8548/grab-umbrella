@@ -1,6 +1,32 @@
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import type { SlotForecast } from "../lib/types";
 
+// 그 시각(anchor)의 실제 날씨 이모지. 강수형태(PTY)가 있으면 우선, 없으면 하늘상태(SKY)로.
+// 우산 필요 여부와는 무관하게 "지금 이 시각 하늘"만 그린다(아이콘=날씨, 우산=부제목).
+function weatherEmoji(ptyText: string, skyText: string): string {
+  switch (ptyText) {
+    case "비":
+      return "🌧";
+    case "비/눈":
+      return "🌨";
+    case "눈":
+      return "❄️";
+    case "소나기":
+      return "🌦";
+  }
+  // 강수 없음 → 하늘상태로.
+  switch (skyText) {
+    case "맑음":
+      return "☀️";
+    case "구름많음":
+      return "⛅️";
+    case "흐림":
+      return "☁️";
+    default:
+      return "🌤";
+  }
+}
+
 // 출근/퇴근 카드 (보조 정보). spec §7.1: 우산 여부·기온·강수확률을 압축.
 // 메인 상단 결론이 주인공이므로 카드는 절제된 크기로.
 // 탭하면 상위(MainScreen)가 시간별 흐름을 하단 시트로 연다. hourly 없으면 탭 비활성.
@@ -64,11 +90,21 @@ export default function CommuteCard({
 
       {data ? (
         <>
-          <Text style={styles.umbrella}>{data.needUmbrella ? "☔️" : "🌤"}</Text>
+          {/* 메인 아이콘은 우산 여부가 아니라 그 시각(anchor)의 실제 날씨를 그린다.
+              우산 필요는 아래 부제목으로 전달 → "18시 맑은데 ☔️" 모순 제거. */}
+          <Text style={styles.umbrella}>{weatherEmoji(data.ptyText, data.skyText)}</Text>
           <Text style={styles.temp}>{Math.round(data.tempC)}°</Text>
           <Text style={styles.meta} numberOfLines={1}>
             {data.skyText} · {data.popPct}%
           </Text>
+
+          {/* 대표값(맑음)과 우산 결론이 어긋날 때의 근거. 예: "19시부터 소나기".
+              혼란("맑은데 왜 우산?")을 없애기 위해 카드에서 직접 이유를 보여준다. */}
+          {data.needUmbrella && data.umbrellaReason ? (
+            <Text style={styles.reason} numberOfLines={1}>
+              ☔️ {data.umbrellaReason}
+            </Text>
+          ) : null}
 
           <Text style={[styles.hint, !hasHourly && styles.hintDisabled]}>
             {hasHourly ? "시간별 보기 ›" : "시간별 정보 없음"}
@@ -103,6 +139,8 @@ const styles = StyleSheet.create({
   umbrella: { fontSize: 28, marginTop: 10 },
   temp: { fontSize: 34, fontWeight: "300", marginTop: 2 },
   meta: { fontSize: 13, color: "#3C3C43", marginTop: 2 },
+  // 우산 근거 부제목: 대표값과 어긋날 때만 표시. 비를 알리는 강조 톤.
+  reason: { fontSize: 12, fontWeight: "600", color: "#0A84FF", marginTop: 6 },
   hint: { fontSize: 12, color: "#007AFF", marginTop: 12 },
   hintDisabled: { color: "#C7C7CC" },
   // 지난 시점 카드: 흐리게, 자리만 채움.

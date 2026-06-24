@@ -123,11 +123,11 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Pressable onPress={onClose} hitSlop={12}>
-          <Text style={styles.back}>‹ 뒤로</Text>
+        <Pressable onPress={onClose} hitSlop={12} style={styles.backButton}>
+          <Text style={styles.back}>‹</Text>
         </Pressable>
         <Text style={styles.title}>설정</Text>
-        <View style={{ width: 48 }} />
+        <View style={styles.backButton} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -298,7 +298,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 16,
   },
-  back: { fontSize: 17, color: "#007AFF" },
+  // 뒤로: iOS 스타일 chevron 하나. 좌(아이콘)·우(spacer) 동일 폭으로 제목을 중앙 정렬.
+  backButton: { width: 44 },
+  back: { fontSize: 30, color: "#007AFF", fontWeight: "400", marginTop: -4 },
   title: { fontSize: 17, fontWeight: "600" },
   scroll: { paddingBottom: 40 },
   groupHeader: {

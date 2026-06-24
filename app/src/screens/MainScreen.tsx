@@ -5,6 +5,7 @@ import {
   Pressable,
   ActivityIndicator,
   ScrollView,
+  RefreshControl,
   StyleSheet,
 } from "react-native";
 import CommuteCard from "../components/CommuteCard";
@@ -33,9 +34,12 @@ type SheetTarget = { dayWord: DayWord; slotKey: SlotKey } | null;
 export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [sheet, setSheet] = useState<SheetTarget>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
-    setState({ kind: "loading" });
+  // silent=true 면 전체 화면을 loading 스피너로 덮지 않는다(pull-to-refresh 용).
+  // 결과는 동일하게 ready/sync-needed/error 로 귀결된다.
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setState({ kind: "loading" });
     try {
       const settings = await loadSettings();
       if (!settings) {
@@ -57,6 +61,16 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       setState({ kind: "error", message });
     }
   }, []);
+
+  // 아래로 당겨서 새로고침: 화면을 깜빡이지 않고 데이터만 다시 가져온다.
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   useEffect(() => {
     load();
@@ -94,7 +108,7 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       ) : state.kind === "error" ? (
         <View style={styles.center}>
           <Text style={styles.emptyText}>{state.message}</Text>
-          <Pressable style={styles.primaryButton} onPress={load}>
+          <Pressable style={styles.primaryButton} onPress={() => load()}>
             <Text style={styles.primaryButtonText}>다시 시도</Text>
           </Pressable>
         </View>
@@ -103,6 +117,8 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
           forecast={state.forecast}
           settings={state.settings}
           sheet={sheet}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
           onOpenSheet={(dayWord, slotKey) => setSheet({ dayWord, slotKey })}
           onCloseSheet={() => setSheet(null)}
         />
@@ -131,16 +147,39 @@ function pickSections(forecast: ForecastResponse): DayWord[] {
   return sections;
 }
 
+// 한 슬롯의 우산 이유 문구를 만든다. 서버 reason(예 "19시부터 소나기")이 있으면 우선,
+// 없으면(anchor 자체가 비라 reason 비어 있음) 강수형태(ptyText)로 폴백. 둘 다 없으면 "비".
+function slotReason(slot: SlotForecast | null): string {
+  if (!slot?.needUmbrella) return "";
+  if (slot.umbrellaReason) return slot.umbrellaReason;
+  return slot.ptyText && slot.ptyText !== "없음" ? slot.ptyText : "비";
+}
+
+// 섹션(하루) 결론 아래에 붙일 이유. 우산이 필요한 슬롯별로 "출근길 …" / "퇴근길 …" 을
+// 모아 콤마로 잇는다. 예: "퇴근길 19시부터 소나기" 또는 "출근길 비, 퇴근길 소나기".
+function buildSectionReason(day: DayForecast): string {
+  const parts: string[] = [];
+  const m = slotReason(day.morning);
+  if (m) parts.push(`출근길 ${m}`);
+  const e = slotReason(day.evening);
+  if (e) parts.push(`퇴근길 ${e}`);
+  return parts.join(", ");
+}
+
 function ReadyView({
   forecast,
   settings,
   sheet,
+  refreshing,
+  onRefresh,
   onOpenSheet,
   onCloseSheet,
 }: {
   forecast: ForecastResponse;
   settings: Settings;
   sheet: SheetTarget;
+  refreshing: boolean;
+  onRefresh: () => void;
   onOpenSheet: (dayWord: DayWord, slotKey: SlotKey) => void;
   onCloseSheet: () => void;
 }) {
@@ -158,6 +197,9 @@ function ReadyView({
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#8E8E93" />
+        }
       >
         {sections.map((dayWord) => (
           <DaySection
@@ -200,6 +242,11 @@ function DaySection({
     (dayForecast.morning?.needUmbrella ?? false) ||
     (dayForecast.evening?.needUmbrella ?? false);
 
+  // 결론 아래 작은 이유: 우산이 필요한 슬롯별로 "출근길 …" / "퇴근길 …" 을 모은다.
+  // 슬롯 reason(예 "19시부터 소나기")이 있으면 그걸, anchor 자체가 비라 비어 있으면
+  // 강수형태(ptyText)로 폴백("비"/"소나기"). 우산 불필요면 빈 문자열.
+  const reasonText = needUmbrella ? buildSectionReason(dayForecast) : "";
+
   // 카드 자리: 출근/퇴근 두 칸을 항상 둔다.
   //  - 오늘 섹션: 지난 슬롯(null)은 흐린 "지났어요" 카드로 자리를 채워 두 칸 균형 유지.
   //  - 내일 섹션: 지난 게 없으므로 살아있는 슬롯만(보통 둘 다).
@@ -222,11 +269,18 @@ function DaySection({
   return (
     <View style={styles.section}>
       <Text style={styles.dayWord}>{dayWord}</Text>
-      <View style={styles.conclusionRow}>
+      {/* 아이콘 + (결론 텍스트 / 이유) 세로 묶음. 이유를 텍스트와 같은 컨테이너에 넣어
+          결론 텍스트와 정확히 같은 x 에서 시작하게 한다(이모지 폭에 의존하지 않음).
+          이유가 있으면(2줄) 상단 정렬, 없으면(1줄) 아이콘과 중앙 정렬. */}
+      <View style={[styles.conclusionRow, reasonText ? styles.conclusionRowTop : styles.conclusionRowCenter]}>
         <Text style={styles.conclusionIcon}>{needUmbrella ? "☔️" : "🌤"}</Text>
-        <Text style={styles.conclusionText}>
-          {needUmbrella ? "우산 챙기세요" : "우산 필요 없어요"}
-        </Text>
+        <View style={styles.conclusionTextCol}>
+          <Text style={styles.conclusionText}>
+            {needUmbrella ? "우산 챙기세요" : "우산 필요 없어요"}
+          </Text>
+          {/* 우산이 필요할 때만, 결론 바로 아래에 작게 이유를 보여준다. */}
+          {reasonText ? <Text style={styles.conclusionReason}>{reasonText}</Text> : null}
+        </View>
       </View>
 
       {/* 카드 1개면 가로 절반만 차지(혼자 꽉 차지 않게), 2개면 동등 분할. */}
@@ -257,10 +311,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 12,
+    marginBottom: 24,
   },
   title: { fontSize: 28, fontWeight: "700" },
-  gear: { fontSize: 24 },
+  gear: { fontSize: 30 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16 },
   emptyText: { fontSize: 17, color: "#3C3C43", textAlign: "center", paddingHorizontal: 24 },
   primaryButton: {
@@ -278,12 +332,19 @@ const styles = StyleSheet.create({
   dayWord: { fontSize: 24, fontWeight: "700" },
   conclusionRow: {
     flexDirection: "row",
-    alignItems: "center",
     marginTop: 6,
     marginBottom: 14,
   },
+  // 이유가 있을 때(2줄): 아이콘을 결론 텍스트 첫 줄에 맞춰 상단 정렬.
+  conclusionRowTop: { alignItems: "flex-start" },
+  // 이유가 없을 때(1줄): 아이콘과 결론 텍스트를 중앙 정렬.
+  conclusionRowCenter: { alignItems: "center" },
   conclusionIcon: { fontSize: 28, marginRight: 8 },
+  // 결론 텍스트 + 이유를 담는 세로 컬럼. 이유가 텍스트와 같은 x 에서 시작하도록.
+  conclusionTextCol: { flex: 1 },
   conclusionText: { fontSize: 20, fontWeight: "600", color: "#3C3C43" },
+  // 결론 바로 아래 작은 이유. 같은 컬럼에 있어 들여쓰기가 자동으로 맞는다.
+  conclusionReason: { fontSize: 13, color: "#8E8E93", marginTop: 2 },
   // 카드 행: 살아있는 카드들을 가로로.
   cards: { flexDirection: "row", alignItems: "stretch" },
   cardSlot: { flex: 1 },

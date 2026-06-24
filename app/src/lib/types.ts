@@ -19,6 +19,9 @@ export interface SlotForecast {
   tempC: number;
   popPct: number; // 강수확률
   needUmbrella: boolean;
+  // 대표값(anchor)과 우산 결론이 어긋날 때의 근거. 예: 출근 정시는 맑지만
+  // 윈도우 안 "19시부터 소나기"라 우산이 필요한 경우. 일치하면 빈 문자열.
+  umbrellaReason: string;
   feelsVsYesterday?: string; // "어제보다 추워요" (고도화)
   hourly?: HourlyPoint[]; // 점진적 공개용 시간별 흐름 (spec §7.1)
 }
