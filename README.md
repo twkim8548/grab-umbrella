@@ -1,60 +1,42 @@
 # 우산챙겨? (grab-umbrella)
 
-출퇴근길 날씨 알림 앱. 사용자가 실제로 바깥에 있는 두 순간 — **출근 시각, 퇴근 시각** — 의 날씨에만 집중한다.
+> 출퇴근길, 우산 챙겨야 할까? 그 한 가지를 가장 잘 답하는 앱.
+
+대부분의 날씨 앱은 "오늘 하루"를 보여준다. 하지만 출근하면 종일 실내에 있으니, 정작 중요한 건 **바깥에 있는 두 순간 — 출근 시각과 퇴근 시각**뿐이다. 우산챙겨?는 딱 그 두 시점에만 집중한다.
 
 앱이 답하는 질문은 단 두 개:
-- 오늘 출근/퇴근할 때 우산 챙겨야 해?
-- 옷은 어떻게 입어야 해? (어제 대비 체감 — 고도화 예정)
+- 오늘 출근/퇴근할 때 **우산 챙겨야 해?**
+- 옷은 어떻게 입어야 해? *(어제 대비 체감 — 예정)*
 
-킬러 기능은 화면이 아니라 **푸시**다. 앱을 안 켜도 출발 30분 전에 "우산 챙기세요" 한 줄이 온다.
+## 무엇이 다른가
 
-## 문서 (docs/)
+**📲 화면이 아니라 푸시가 주인공.** 앱을 켜지 않아도 출발 30분 전에 "우산 챙기세요" 한 줄이 알아서 온다. 비 올 때만, 하루 한 번. 이게 이 앱의 존재 이유다.
 
-| 문서 | 내용 |
-|---|---|
-| [docs/PROJECT.md](./docs/PROJECT.md) | **여기부터** — 개요·컨셉·스택·구조 (진입점) |
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 서버/앱 실제 구현 상세 (API·DB·컴포넌트) |
-| [docs/WEATHER-API.md](./docs/WEATHER-API.md) | 기상청 API·base_time 마진·우산 판정 로직 |
-| [docs/DECISIONS.md](./docs/DECISIONS.md) | 확정된 설계 결정 (왜 그렇게 정했는지) |
-| [docs/design-main-screen.md](./docs/design-main-screen.md) | 메인 화면 디자인 확정안 |
-| [docs/kma-guide/](./docs/kma-guide/README.md) | 기상청 공식 활용가이드 (출처) |
+**🎯 임박할수록 더 정밀하게.** 멀리 보는 시점은 단기예보(글피까지)로, 6시간 안쪽으로 임박한 시점은 **초단기예보**로 — 같은 시각이라도 더 자세하고 정확한 예측을 골라 쓴다. 푸시는 발송 직전 초단기예보로 판단해 신뢰도를 높인다.
 
-## 모노레포 구조
+**☔️ "우산은 아침에 한 번 결정된다."** 출근 OR 퇴근, 하루 중 하나라도 비가 오면 챙기라고 한다. 게다가 출퇴근 정시뿐 아니라 그 **전후 시간대(윈도우)**까지 살펴서, "퇴근 19시는 맑지만 직후 소나기" 같은 경우도 놓치지 않는다.
 
-```
-grab-umbrella/
-├── server/    # Go 백엔드 (cmd: api/cron/migrate + 개발도구)
-├── app/       # React Native (Expo SDK 54) 앱
-└── docs/      # 설계·구현 문서
-```
+**🙅 로그인 없음.** 계정이 아니라 기기 기반. 식별자는 Expo 푸시 토큰 하나. 설정은 폰에 살고, 서버는 푸시에 필요한 만큼만 안다.
 
 ## 기술 스택
 
-| 영역 | 선택 |
+```
+React Native (Expo SDK 54)  ·  Go 1.22 + chi  ·  Neon (Postgres)  ·  Expo Push
+```
+
+모노레포: `server/`(Go 백엔드 + Cron 푸시) + `app/`(React Native 앱). 날씨는 **기상청 단기·초단기예보**, 주소→좌표는 카카오. 호스팅은 Render(웹 + Cron 별도).
+
+핵심 흐름(설정 → 예보 → 푸시)은 동작하며 실기기로 검증됨.
+
+## 문서
+
+| 문서 | 내용 |
 |---|---|
-| 앱 | React Native + Expo SDK 54 (React 19, RN 0.81) |
-| 서버 | Go 1.22 + chi |
-| DB | **Neon** (Postgres, 싱가포르) |
-| 호스팅 | Render (Free) — 웹 + Cron 별도 |
-| 푸시 | Expo Push |
+| **[docs/PROJECT.md](./docs/PROJECT.md)** | **여기부터** — 개요·컨셉·스택·구조·빠른 시작 |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 서버/앱 실제 구현 (API·DB·컴포넌트) |
+| [docs/WEATHER-API.md](./docs/WEATHER-API.md) | 기상청 API·base_time 마진·우산 판정 로직 |
+| [docs/DECISIONS.md](./docs/DECISIONS.md) | 확정된 설계 결정 (왜 그렇게 정했는지) |
+| [docs/design-main-screen.md](./docs/design-main-screen.md) | 메인 화면 디자인 확정안 |
+| [CLAUDE.md](./CLAUDE.md) | AI 작업 규칙 (계정·도구·관례) |
 
-**로그인 없음.** 기기 기반 식별 — 식별자는 Expo 푸시 토큰.
-
-## 빠른 시작
-
-### 서버
-```bash
-cd server
-# .env 에 DATABASE_URL, KMA_SERVICE_KEY, KAKAO_REST_API_KEY 채우기 (gitignored)
-go run ./cmd/migrate   # 최초 1회
-go run ./cmd/api       # :8080
-```
-
-### 앱
-```bash
-cd app
-pnpm install
-pnpm expo start --lan  # 실기기는 app.json extra.apiBaseUrl 의 LAN IP 사용
-```
-
-자세한 구조·설계 결정은 [docs/PROJECT.md](./docs/PROJECT.md), [docs/DECISIONS.md](./docs/DECISIONS.md) 참고.
+빠른 시작·셋업은 [docs/PROJECT.md](./docs/PROJECT.md)를 참고.
