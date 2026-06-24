@@ -12,6 +12,7 @@ import (
 
 	"github.com/twkim8548/grab-umbrella/server/internal/geocode"
 	"github.com/twkim8548/grab-umbrella/server/internal/handler"
+	"github.com/twkim8548/grab-umbrella/server/internal/push"
 	"github.com/twkim8548/grab-umbrella/server/internal/store"
 	"github.com/twkim8548/grab-umbrella/server/internal/weather"
 )
@@ -48,7 +49,16 @@ func main() {
 	}
 	gc := geocode.New(kakaoKey)
 
-	h := &handler.Handler{Store: st, Weather: wc, Geocode: gc}
+	// 푸시(/cron/tick 발송용). CRON_SECRET 으로 /cron/tick 호출을 보호한다(미설정 시 비활성).
+	pc := push.New(env("EXPO_PUSH_URL", "https://exp.host/--/api/v2/push/send"))
+	cronSecret := os.Getenv("CRON_SECRET")
+	if cronSecret == "" {
+		log.Println("warning: CRON_SECRET not set — /cron/tick disabled")
+	}
+
+	h := &handler.Handler{
+		Store: st, Weather: wc, Geocode: gc, Push: pc, CronSecret: cronSecret,
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger, middleware.Recoverer)
@@ -57,6 +67,7 @@ func main() {
 	r.Post("/sync", h.Sync)
 	r.Get("/forecast", h.Forecast)
 	r.Get("/forecast/now", h.ForecastNow)
+	r.Post("/cron/tick", h.CronTick) // EventBridge Scheduler 트리거 (시크릿 보호)
 
 	port := env("PORT", "8080")
 	log.Printf("api listening on :%s", port)

@@ -3,6 +3,7 @@ module github.com/twkim8548/grab-umbrella/server
 go 1.22
 
 require (
+	github.com/aws/aws-lambda-go v1.54.0
 	github.com/go-chi/chi/v5 v5.0.12
 	github.com/jackc/pgx/v5 v5.5.5
 )

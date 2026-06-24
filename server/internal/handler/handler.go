@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/twkim8548/grab-umbrella/server/internal/geocode"
 	"github.com/twkim8548/grab-umbrella/server/internal/grid"
+	"github.com/twkim8548/grab-umbrella/server/internal/push"
 	"github.com/twkim8548/grab-umbrella/server/internal/store"
 	"github.com/twkim8548/grab-umbrella/server/internal/weather"
 )
@@ -20,6 +21,9 @@ type Handler struct {
 	Store   *store.Store
 	Weather *weather.Client
 	Geocode *geocode.Client
+	Push    *push.Client // /cron/tick 푸시 발송용
+	// CronSecret 은 /cron/tick 호출을 보호하는 공유 시크릿. 비어 있으면 /cron/tick 비활성.
+	CronSecret string
 }
 
 // syncRequest — POST /sync 입력. 앱이 도로명 주소를 보내면 서버가 위경도→격자로 변환.

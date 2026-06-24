@@ -1,12 +1,11 @@
-// Command cron 은 Render Cron Job 으로 매 N분 깨어나 출발 30분 전 푸시를 발송한다. spec §5.
+// Command cron 은 출발 lead분 전 우산 푸시를 한 틱 실행한다. spec §5.
 //
-// 웹 서비스와 별도 서비스로 돌아 spin-down 영향을 받지 않는다.
+// 두 모드로 동작한다(코드 동일, cronjob.Run 재사용):
+//   - Lambda: EventBridge Scheduler 가 universal target 으로 이 함수를 직접 invoke.
+//             AWS_LAMBDA_RUNTIME_API 가 있으면 lambda.Start 로 핸들러 등록.
+//   - 로컬:   AWS 환경이 아니면 1회 실행 후 종료(개발/테스트). go run ./cmd/cron.
 //
-// 흐름 (spec §5):
-//  1. "지금부터 ~lead분 뒤가 출근/퇴근"인 기기만 DB에서 SELECT
-//  2. 각 기기 위치·시각으로 초단기예보 조회 (출근=집, 퇴근=회사)
-//  3. 한 줄 메시지로 압축 → Expo Push 발송
-//  4. 중복 방지: last_morning_push_date / last_evening_push_date 기록
+// 테스트 훅(운영 미설정): CRON_NOW="2006-01-02 15:04", CRON_FORCE_SEND=1.
 package main
 
 import (
@@ -16,24 +15,32 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/twkim8548/grab-umbrella/server/internal/cronjob"
 	"github.com/twkim8548/grab-umbrella/server/internal/push"
 	"github.com/twkim8548/grab-umbrella/server/internal/store"
 	"github.com/twkim8548/grab-umbrella/server/internal/weather"
 )
 
-// kst 는 한국 표준시. cron 의 now 는 KST 기준이다(commute "HHmm" 가 KST).
 var kst = time.FixedZone("KST", 9*60*60)
 
-// expoTokenPrefix 는 정식 Expo 푸시 토큰 접두사다. 이걸로 시작하지 않으면(예: "dev-")
-// 실제 발송할 수 없으므로 cron 에서 skip 한다.
-const expoTokenPrefix = "ExponentPushToken["
-
 func main() {
-	ctx := context.Background()
+	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
+		lambda.Start(handler) // Lambda: Scheduler invoke 마다 handler 실행
+		return
+	}
+	// 로컬: 1회 실행 후 종료.
+	if _, err := handler(context.Background()); err != nil {
+		log.Fatalf("cron: %v", err)
+	}
+}
 
+// handler 는 한 틱을 실행한다. Lambda invoke 이벤트는 사용하지 않으므로 인자가 없다
+// (EventBridge Scheduler 는 고정 페이로드만 보내고 본문 내용은 불필요).
+func handler(ctx context.Context) (cronjob.Result, error) {
 	st, err := store.New(ctx, mustEnv("DATABASE_URL"))
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		return cronjob.Result{}, err
 	}
 	defer st.Close()
 
@@ -41,157 +48,16 @@ func main() {
 		"http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0"))
 	pc := push.New(env("EXPO_PUSH_URL", "https://exp.host/--/api/v2/push/send"))
 
-	lead := envInt("PUSH_LEAD_MINUTES", 30)
-
-	now := nowKST()
-	today := now.Format("20060102")
-	log.Printf("cron: tick start (now=%s lead=%dm)", now.Format(time.RFC3339), lead)
-
-	due, err := st.DueDevices(ctx, now, lead)
-	if err != nil {
-		log.Fatalf("cron: DueDevices: %v", err)
-	}
-	log.Printf("cron: %d device(s) due", len(due))
-
-	sent, skipped, failed := 0, 0, 0
-	for _, d := range due {
-		if err := process(ctx, st, wc, pc, d, now, today, &sent, &skipped); err != nil {
-			failed++
-			log.Printf("cron: device %s slot=%s error: %v", maskToken(d.PushToken), d.Slot, err)
-		}
-	}
-
-	log.Printf("cron: tick done (due=%d sent=%d skipped=%d failed=%d)",
-		len(due), sent, skipped, failed)
+	return cronjob.Run(ctx,
+		cronjob.Deps{Store: st, Weather: wc, Push: pc},
+		cronjob.Options{
+			Now:       nowKST(),
+			LeadMin:   envInt("PUSH_LEAD_MINUTES", 30),
+			ForceSend: os.Getenv("CRON_FORCE_SEND") == "1",
+		})
 }
 
-// process 는 한 기기 한 슬롯을 처리한다. 예보 조회 → 메시지 압축 → (정식 토큰이면) 발송 →
-// 발송 성공 시 MarkPushed. 한 기기 실패가 전체를 멈추지 않게 에러는 반환만 한다.
-func process(ctx context.Context, st *store.Store, wc *weather.Client, pc *push.Client,
-	d store.DueDevice, now time.Time, today string, sent, skipped *int) error {
-
-	fcstDate, fcstTime := weather.SlotDateTime(now, d.FcstTime)
-
-	items, err := fetchForecast(ctx, wc, d.Nx, d.Ny, now, fcstDate, fcstTime)
-	if err != nil {
-		return err
-	}
-
-	_, ok := weather.SlotForecastAt(items, fcstDate, fcstTime)
-	if !ok {
-		log.Printf("cron: device %s slot=%s no forecast for %s %s — skip",
-			maskToken(d.PushToken), d.Slot, fcstDate, fcstTime)
-		*skipped++
-		return nil
-	}
-
-	// 우산 판정은 출퇴근 윈도우 전체 기준(앱 /forecast 와 동일). 퇴근 정시는 맑아도
-	// 윈도우 안 소나기가 있으면 발송한다. 출근=morning, 퇴근=evening 비대칭 윈도우.
-	before, after := weather.MorningWindow()
-	if d.Slot == store.SlotEvening {
-		before, after = weather.EveningWindow()
-	}
-	needUmbrella := weather.WindowNeedUmbrella(items, fcstDate, fcstTime, before, after)
-
-	title, body, shouldSend := buildMessage(d.Slot, needUmbrella)
-	// 테스트용: CRON_FORCE_SEND=1 이면 비 여부와 무관하게 발송한다(전 구간 검증).
-	// 운영에선 미설정 → 평소처럼 비 올 때만 발송. force 시 문구가 비어 있으면 채운다.
-	if os.Getenv("CRON_FORCE_SEND") == "1" && !shouldSend {
-		title, body, shouldSend = forceMessage(d.Slot)
-		log.Printf("cron: ⚠ CRON_FORCE_SEND active — forcing send for %s", d.Slot)
-	}
-	if !shouldSend {
-		// 비 안 오면 발송 안 함(spec §5). 체감(옷차림) 기반 발송은 §9-7 미구현.
-		// TODO(§9-7): 어제 대비 체감 변화가 크면 우산 무관하게 발송.
-		*skipped++
-		return nil
-	}
-
-	// 정식 Expo 토큰만 실제 발송. dev 토큰은 skip(에러 아님)하고 MarkPushed 도 하지 않아
-	// 나중에 실제 토큰이 붙으면 받을 수 있게 한다.
-	if !hasExpoTokenPrefix(d.PushToken) {
-		log.Printf("cron: device %s slot=%s non-expo token — skip send (no mark)",
-			maskToken(d.PushToken), d.Slot)
-		*skipped++
-		return nil
-	}
-
-	if err := pc.Send(ctx, push.Message{To: d.PushToken, Title: title, Body: body}); err != nil {
-		return err
-	}
-	if err := st.MarkPushed(ctx, d.PushToken, d.Slot, today); err != nil {
-		return err
-	}
-	*sent++
-	log.Printf("cron: device %s slot=%s sent: %s", maskToken(d.PushToken), d.Slot, body)
-	return nil
-}
-
-// fetchForecast 는 6시간 이내(초단기 범위)면 초단기예보를, 아니면 단기예보를 조회한다.
-// 초단기 조회 실패 시 단기예보로 폴백한다(spec §9-2 graceful).
-func fetchForecast(ctx context.Context, wc *weather.Client, nx, ny int,
-	now time.Time, fcstDate, fcstTime string) ([]weather.FcstItem, error) {
-
-	if weather.WithinUltraRange(now, fcstDate, fcstTime) {
-		items, err := wc.UltraSrtForecast(ctx, nx, ny)
-		if err == nil {
-			return items, nil
-		}
-		log.Printf("cron: ultra forecast failed (%v) — falling back to vilage", err)
-	}
-	return wc.VilageForecast(ctx, nx, ny)
-}
-
-// buildMessage 는 슬롯 예보를 한 줄 알림으로 압축한다(spec §5). 우산이 필요할 때만
-// 발송한다(shouldSend). 비 안 오면 shouldSend=false 로 발송을 거른다.
-func buildMessage(slot string, needUmbrella bool) (title, body string, shouldSend bool) {
-	if !needUmbrella {
-		return "", "", false
-	}
-	title = "우산 챙기세요! ☔️"
-	switch slot {
-	case store.SlotMorning:
-		body = "오늘 출근길에 비소식이 있어요"
-	case store.SlotEvening:
-		body = "오늘 퇴근길에 비소식이 있어요"
-	default:
-		body = "오늘 비소식이 있어요"
-	}
-	return title, body, true
-}
-
-// forceMessage 는 CRON_FORCE_SEND 테스트 시 비 여부와 무관하게 쓸 문구를 만든다.
-// 실제 발송 문구(buildMessage 의 비 케이스)와 동일하게 맞춘다.
-func forceMessage(slot string) (title, body string, shouldSend bool) {
-	title = "우산 챙기세요! ☔️"
-	switch slot {
-	case store.SlotMorning:
-		body = "오늘 출근길에 비소식이 있어요"
-	case store.SlotEvening:
-		body = "오늘 퇴근길에 비소식이 있어요"
-	default:
-		body = "오늘 비소식이 있어요"
-	}
-	return title, body, true
-}
-
-// hasExpoTokenPrefix 는 정식 Expo 토큰(ExponentPushToken[...])인지 본다.
-func hasExpoTokenPrefix(token string) bool {
-	return len(token) >= len(expoTokenPrefix) && token[:len(expoTokenPrefix)] == expoTokenPrefix
-}
-
-// maskToken 은 로그에 토큰 전체를 남기지 않도록 앞부분만 보인다.
-func maskToken(token string) string {
-	const n = 12
-	if len(token) <= n {
-		return token
-	}
-	return token[:n] + "…"
-}
-
-// nowKST 는 cron 의 기준 시각을 반환한다. 평상시 실제 현재시각(KST)이지만,
-// 테스트용으로 CRON_NOW("2006-01-02 15:04")가 설정되면 그 시각을 KST 로 해석한다.
-// 운영에선 미설정이므로 영향 없다(시간대별 발송 흐름 수동 검증용).
+// nowKST 는 기준 시각(KST). 테스트용 CRON_NOW("2006-01-02 15:04") 설정 시 그 시각(운영 미설정).
 func nowKST() time.Time {
 	if v := os.Getenv("CRON_NOW"); v != "" {
 		t, err := time.ParseInLocation("2006-01-02 15:04", v, kst)
