@@ -37,6 +37,19 @@ Globals:
     Architectures: [arm64]   # Graviton: 콜드스타트·비용 유리
 
 Resources:
+  # ── 로그 그룹: 보존 30일 명시(미설정 시 무기한 보존되어 저장료 누적). ──
+  # 이름을 Lambda 자동생성 규칙(/aws/lambda/<함수명>)과 맞춰, 함수가 이 그룹에 로그한다.
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/grab-umbrella-api
+      RetentionInDays: 30
+  CronLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/grab-umbrella-cron
+      RetentionInDays: 30
+
   # ── api: HTTP 서버(Web Adapter). 앱이 Function URL 로 /sync·/forecast 호출. ──
   ApiFunction:
     Type: AWS::Serverless::Function
