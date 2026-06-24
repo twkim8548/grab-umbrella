@@ -20,7 +20,8 @@
       "eas": {
         "projectId": "f43a251c-5a7f-4a51-b198-591f9e766cdc"
       },
-      "apiBaseUrl": "http://192.168.0.79:8080"
+      "apiBaseUrl": "http://192.168.0.79:8080",
+      "mockForecast": ""
     },
     "owner": "twkim8548"
   }

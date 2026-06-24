@@ -100,6 +100,14 @@ type forecastResponse struct {
 // 앱이 "내일"을 하루 단위(출근+퇴근)로 판정할 수 있도록, 출퇴근 사이 시간대에도
 // 4시점(오늘 출근/퇴근, 내일 출근/퇴근)을 모두 반환한다. 이미 지난 시점은 null.
 func (h *Handler) Forecast(w http.ResponseWriter, r *http.Request) {
+	// 개발용 시나리오 프리뷰: ?mock=... 이 있으면 DB·기상청 없이 가짜 4시점을 내린다.
+	// 운영 영향 없음(파라미터 없으면 통과). 어휘는 internal/handler/mock.go 참고.
+	if mock := r.URL.Query().Get("mock"); mock != "" {
+		log.Printf("forecast: ⚠ mock preview (%q)", mock)
+		writeMockForecast(w, mock)
+		return
+	}
+
 	token := r.URL.Query().Get("push_token")
 	if token == "" {
 		http.Error(w, "push_token required", http.StatusBadRequest)
