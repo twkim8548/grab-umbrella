@@ -95,6 +95,16 @@ func SlotDateTime(now time.Time, commute string) (fcstDate, fcstTime string) {
 	return fcstDate, fcstTime
 }
 
+// SlotIsPast 는 특정 예보 시각(fcstDate="YYYYMMDD", fcstTime="HHmm")이 now(KST) 기준
+// 이미 지났는지 판단한다. slot < now 이면 true. 동(同) 시각(slot == now)은 아직 안 지난
+// 것으로 보고 false 를 반환한다(정각 딱 맞으면 표시). now 는 내부에서 KST 로 변환한다.
+func SlotIsPast(now time.Time, fcstDate, fcstTime string) bool {
+	n := now.In(kst)
+	hh, mm := parseHHmm(fcstTime)
+	slot := time.Date(yearOf(fcstDate), monthOf(fcstDate), dayOf(fcstDate), hh, mm, 0, 0, kst)
+	return slot.Before(n)
+}
+
 // ultraRangeHours 는 초단기예보가 커버하는 예보 범위다(발표시점부터 +6시간). spec §4.1.
 const ultraRangeHours = 6
 

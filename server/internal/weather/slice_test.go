@@ -122,6 +122,46 @@ func TestWithinUltraRangeNonKST(t *testing.T) {
 	}
 }
 
+func TestSlotIsPast(t *testing.T) {
+	now := time.Date(2026, 6, 23, 15, 0, 0, 0, kst)
+	cases := []struct {
+		name     string
+		fcstDate string
+		fcstTime string
+		want     bool
+	}{
+		// 1시간 전 → 지남.
+		{"1h before", "20260623", "1400", true},
+		// 같은 시각(정각 일치) → 아직 안 지남(표시).
+		{"exact now", "20260623", "1500", false},
+		// 미래 → 안 지남.
+		{"future today", "20260623", "1800", false},
+		// 내일 출근 → 안 지남.
+		{"tomorrow morning", "20260624", "0900", false},
+		// 어제 → 지남.
+		{"yesterday", "20260622", "0900", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SlotIsPast(now, tc.fcstDate, tc.fcstTime); got != tc.want {
+				t.Errorf("SlotIsPast(15:00, %s %s) = %v; want %v",
+					tc.fcstDate, tc.fcstTime, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSlotIsPastNonKST(t *testing.T) {
+	// 2026-06-23 06:00 UTC == 15:00 KST. slot 1400 KST → 지남.
+	utc := time.Date(2026, 6, 23, 6, 0, 0, 0, time.UTC)
+	if !SlotIsPast(utc, "20260623", "1400") {
+		t.Error("expected UTC input converted to KST to detect past slot")
+	}
+	if SlotIsPast(utc, "20260623", "1600") {
+		t.Error("expected future slot not to be past")
+	}
+}
+
 // hourlyItems 는 0600~2200 정시별 TMP/POP/PTY 를 채운 두 날짜 데이터다(슬라이스 윈도우 검증용).
 func hourlyItems() []FcstItem {
 	var items []FcstItem

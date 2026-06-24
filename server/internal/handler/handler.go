@@ -82,14 +82,23 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// forecastResponse 는 GET /forecast 응답이다. 앱 ForecastResponse 와 일치.
-// 데이터가 없는 슬롯은 null 로 내려 앱이 "불러오는 중"을 graceful 하게 표시하게 한다.
-type forecastResponse struct {
+// dayForecast 는 하루치(출근/퇴근) 카드다. 데이터 없거나 이미 지난 시점은 null.
+type dayForecast struct {
 	Morning *weather.SlotCard `json:"morning"`
 	Evening *weather.SlotCard `json:"evening"`
 }
 
-// Forecast 는 GET /forecast. 출근/퇴근 카드용 가공 데이터 + 시간별 흐름. spec §3·§7.1.
+// forecastResponse 는 GET /forecast 응답이다. 오늘·내일 출퇴근 4시점을 모두 내린다.
+// 데이터가 없거나 이미 지난 슬롯은 null 로 내려 앱이 현재 시각에 맞춰 판정하게 한다.
+type forecastResponse struct {
+	Today    dayForecast `json:"today"`
+	Tomorrow dayForecast `json:"tomorrow"`
+}
+
+// Forecast 는 GET /forecast. 오늘·내일의 출근/퇴근 4시점 카드 + 시간별 흐름. spec §3·§7.1.
+//
+// 앱이 "내일"을 하루 단위(출근+퇴근)로 판정할 수 있도록, 출퇴근 사이 시간대에도
+// 4시점(오늘 출근/퇴근, 내일 출근/퇴근)을 모두 반환한다. 이미 지난 시점은 null.
 func (h *Handler) Forecast(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("push_token")
 	if token == "" {
@@ -108,36 +117,50 @@ func (h *Handler) Forecast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	// 출근/퇴근 각 슬롯의 fcstDate(오늘/내일) + 정시 fcstTime 산출.
-	mDate, mTime := weather.SlotDateTime(now, dev.CommuteStart)
-	eDate, eTime := weather.SlotDateTime(now, dev.CommuteEnd)
+	now := time.Now().In(time.FixedZone("KST", 9*60*60))
+	today := now.Format("20060102")
+	tomorrow := now.AddDate(0, 0, 1).Format("20060102")
 
 	mBefore, mAfter := weather.MorningWindow()
 	eBefore, eAfter := weather.EveningWindow()
 
-	// 집 격자 = 출근 카드, 회사 격자 = 퇴근 카드. 같은 격자면 weather 내부 캐시로 호출 공유.
+	// 집 격자 = 출근 카드, 회사 격자 = 퇴근 카드. 같은 격자의 단기예보는 weather 내부
+	// 캐시(같은 발표본)로 공유되므로, 4시점이 격자별 1회 호출로 커버된다(단기는 글피까지 제공).
 	var resp forecastResponse
-	if card, ok := h.buildSlotCard(r.Context(), now, "morning", dev.HomeNx, dev.HomeNy, mDate, mTime, mBefore, mAfter); ok {
-		resp.Morning = &card
+	if card, ok := h.buildCardForDate(r.Context(), now, "today.morning", today, dev.CommuteStart, dev.HomeNx, dev.HomeNy, mBefore, mAfter); ok {
+		resp.Today.Morning = &card
 	}
-	if card, ok := h.buildSlotCard(r.Context(), now, "evening", dev.WorkNx, dev.WorkNy, eDate, eTime, eBefore, eAfter); ok {
-		resp.Evening = &card
+	if card, ok := h.buildCardForDate(r.Context(), now, "today.evening", today, dev.CommuteEnd, dev.WorkNx, dev.WorkNy, eBefore, eAfter); ok {
+		resp.Today.Evening = &card
+	}
+	if card, ok := h.buildCardForDate(r.Context(), now, "tomorrow.morning", tomorrow, dev.CommuteStart, dev.HomeNx, dev.HomeNy, mBefore, mAfter); ok {
+		resp.Tomorrow.Morning = &card
+	}
+	if card, ok := h.buildCardForDate(r.Context(), now, "tomorrow.evening", tomorrow, dev.CommuteEnd, dev.WorkNx, dev.WorkNy, eBefore, eAfter); ok {
+		resp.Tomorrow.Evening = &card
 	}
 
 	writeJSON(w, resp)
 }
 
-// buildSlotCard 는 한 슬롯의 예보 소스를 시점에 따라 자동 선택해 카드를 만든다(spec §4.1).
+// buildCardForDate 는 명시한 날짜(fcstDate "YYYYMMDD")의 한 슬롯 카드를 만든다(spec §4.1).
 //
-// 선택 규칙:
-//  1. 슬롯 시각이 지금부터 6시간 이내면 초단기예보(getUltraSrtFcst)를 우선 시도.
-//  2. 초단기 호출 실패, 또는 해당 시각 슬롯이 비면 → 단기예보(getVilageFcst)로 폴백.
-//  3. 6시간 밖이면 처음부터 단기예보.
+// 슬롯 시각은 fcstDate + NormalizeToHour(commute) 정시다. 선택 규칙:
+//  1. 그 시각이 now(KST)보다 과거면 → nil,false (이미 지난 시점은 표시하지 않는다).
+//  2. 지금부터 6시간 이내면 초단기예보(getUltraSrtFcst)를 우선 시도.
+//  3. 초단기 호출 실패, 또는 해당 시각 슬롯이 비면 → 단기예보(getVilageFcst)로 폴백.
+//  4. 6시간 밖이면 처음부터 단기예보.
 //
 // 단기예보까지 실패하면 ok=false 를 반환해 호출부가 해당 카드를 null 로 graceful 하게
 // 내린다(spec §4.6·§9-2). 카드와 hourly 는 같은 소스 기준으로 슬라이스된다.
-func (h *Handler) buildSlotCard(ctx context.Context, now time.Time, slot string, nx, ny int, fcstDate, fcstTime string, before, after int) (weather.SlotCard, bool) {
+func (h *Handler) buildCardForDate(ctx context.Context, now time.Time, slot, fcstDate, commute string, nx, ny int, before, after int) (weather.SlotCard, bool) {
+	fcstTime := weather.NormalizeToHour(commute)
+
+	if weather.SlotIsPast(now, fcstDate, fcstTime) {
+		log.Printf("forecast: %s skipped (past %s %s)", slot, fcstDate, fcstTime)
+		return weather.SlotCard{}, false
+	}
+
 	if weather.WithinUltraRange(now, fcstDate, fcstTime) {
 		items, err := h.Weather.UltraSrtForecast(ctx, nx, ny)
 		if err != nil {
