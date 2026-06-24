@@ -30,8 +30,14 @@ export interface HourlyPoint {
   ptyText: string;
 }
 
-// 데이터 없는 슬롯은 null. (서버 계약)
-export interface ForecastResponse {
+// 하루(오늘/내일) 단위 출퇴근 두 시점. 이미 지난 시점은 null. (서버 계약)
+export interface DayForecast {
   morning: SlotForecast | null;
   evening: SlotForecast | null;
+}
+
+// GET /forecast 응답: 오늘·내일 각각의 출퇴근 4시점. 지난 시점은 null.
+export interface ForecastResponse {
+  today: DayForecast;
+  tomorrow: DayForecast;
 }

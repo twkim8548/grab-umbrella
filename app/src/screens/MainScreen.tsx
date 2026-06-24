@@ -11,11 +11,12 @@ import HourlySheet from "../components/HourlySheet";
 import { loadSettings } from "../storage/settings";
 import { getPushToken } from "../lib/push";
 import { getForecast, NOT_REGISTERED } from "../lib/api";
-import { formatHHmm, dayLabel } from "../lib/format";
-import type { ForecastResponse, Settings } from "../lib/types";
+import { formatHHmm } from "../lib/format";
+import type { DayForecast, ForecastResponse, Settings, SlotForecast } from "../lib/types";
 
-// 메인 화면: 상단 단일 결론 + 부연 한 줄 + 출근/퇴근 두 카드.
-// docs/design-main-screen.md 확정안. 우산 판정 = morning.needUmbrella || evening.needUmbrella.
+// 메인 화면: 상단 결론(한 줄/두 줄) + 출근/퇴근 두 카드.
+// docs/design-main-screen.md "시간대별 처리". 우산 판정은 하루 단위(그 날 살아있는 슬롯 중 하나라도 비).
+// 한 줄(오늘 또는 내일) / 두 줄(출퇴근 사이: 오늘+내일)은 살아있는 슬롯 데이터로 결정.
 type LoadState =
   | { kind: "loading" }
   | { kind: "no-settings" }
@@ -105,6 +106,18 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
   );
 }
 
+// 출근/퇴근 카드용으로 "지금 시점 기준 다음 시점"을 고른다.
+// today 슬롯이 살아있으면(=null 아님) 그것(오늘), 아니면 tomorrow 슬롯(내일).
+// day 라벨은 시각 계산이 아니라 어느 날 슬롯을 골랐는지로 정한다.
+function pickNextSlot(
+  forecast: ForecastResponse,
+  key: "morning" | "evening"
+): { data: SlotForecast | null; day: "오늘" | "내일" } {
+  const todaySlot = forecast.today[key];
+  if (todaySlot) return { data: todaySlot, day: "오늘" };
+  return { data: forecast.tomorrow[key], day: "내일" };
+}
+
 function ReadyView({
   forecast,
   settings,
@@ -118,39 +131,53 @@ function ReadyView({
   onOpenSheet: (slot: "morning" | "evening") => void;
   onCloseSheet: () => void;
 }) {
-  const { morning, evening } = forecast;
-  // null 슬롯은 우산 판정에서 제외.
-  const needUmbrella =
-    (morning?.needUmbrella ?? false) || (evening?.needUmbrella ?? false);
+  // 카드: 지금 기준 "다음 출근/다음 퇴근" (today 우선, 없으면 tomorrow).
+  const next = {
+    morning: pickNextSlot(forecast, "morning"),
+    evening: pickNextSlot(forecast, "evening"),
+  };
 
-  const { conclusion, subtitle } = mainMessage(settings, morning, evening);
+  const message = mainMessage(forecast);
 
   return (
     <View style={styles.readyContainer}>
-      {/* 상단 단일 결론: 화면 위쪽~중앙(황금비 지점)에 배치 */}
+      {/* 상단 결론: 한 줄(큰 결론) 또는 두 줄(오늘+내일 각각). */}
       <View style={styles.conclusion}>
-        <Text style={styles.conclusionIcon}>{needUmbrella ? "☔️" : "🌤"}</Text>
-        <Text style={styles.conclusionText}>{conclusion}</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
+        <Text style={styles.conclusionIcon}>{message.needUmbrella ? "☔️" : "🌤"}</Text>
+        {message.lines.length === 1 ? (
+          <>
+            <Text style={styles.conclusionText}>{message.lines[0].conclusion}</Text>
+            <Text style={styles.subtitle}>{message.lines[0].subtitle}</Text>
+          </>
+        ) : (
+          <View style={styles.twoLines}>
+            {message.lines.map((line) => (
+              <View key={line.dayWord} style={styles.lineBlock}>
+                <Text style={styles.lineConclusion}>{line.conclusion}</Text>
+                <Text style={styles.lineSubtitle}>{line.subtitle}</Text>
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* 하단 출근/퇴근 두 카드: 결론 아래 적절한 위치에 */}
       <View style={styles.cards}>
         <CommuteCard
           label="출근"
-          day={dayLabel(settings.commuteStart)}
+          day={next.morning.day}
           time={formatHHmm(settings.commuteStart)}
           dong={settings.homeDong}
-          data={morning}
+          data={next.morning.data}
           onPress={() => onOpenSheet("morning")}
         />
         <View style={{ width: 12 }} />
         <CommuteCard
           label="퇴근"
-          day={dayLabel(settings.commuteEnd)}
+          day={next.evening.day}
           time={formatHHmm(settings.commuteEnd)}
           dong={settings.workDong}
-          data={evening}
+          data={next.evening.data}
           onPress={() => onOpenSheet("evening")}
         />
       </View>
@@ -160,52 +187,78 @@ function ReadyView({
       <HourlySheet
         visible={sheetSlot === "morning"}
         title="출근 시간대"
-        hourly={morning?.hourly ?? null}
+        hourly={next.morning.data?.hourly ?? null}
         onClose={onCloseSheet}
       />
       <HourlySheet
         visible={sheetSlot === "evening"}
         title="퇴근 시간대"
-        hourly={evening?.hourly ?? null}
+        hourly={next.evening.data?.hourly ?? null}
         onClose={onCloseSheet}
       />
     </View>
   );
 }
 
-// 상단 메시지(결론 + 부연)를 만든다.
-//  - 결론: "{오늘/내일}은 우산 {챙기세요/필요 없어요}" (날짜 통합).
-//  - 부연: 어디서 비 오는지("출근길에 비가 와요" / "퇴근길에 비가 와요" / "하루 종일 비가 와요" / "우산 없이 가벼워요").
-// 우산 판정은 하루 단위(출근 OR 퇴근 중 하나라도 비). null 슬롯은 판정 제외.
-//
-// 날짜 접두사: 출근 전이면 둘 다 오늘 → "오늘", 퇴근 후면 둘 다 내일 → "내일".
-// 출근~퇴근 사이(애매 구간)는 두 카드의 날짜가 갈리는데, 이 경우는 추후 두 줄 처리 예정이라
-// 지금은 가까운 쪽(퇴근=오늘 기준)으로 "오늘"을 쓴다.
-function mainMessage(
-  settings: Settings,
-  morning: ForecastResponse["morning"],
-  evening: ForecastResponse["evening"]
-): { conclusion: string; subtitle: string } {
-  const m = morning?.needUmbrella ?? false;
-  const e = evening?.needUmbrella ?? false;
-  const needUmbrella = m || e;
+interface MessageLine {
+  dayWord: "오늘" | "내일";
+  conclusion: string; // "오늘은 우산 챙기세요"
+  subtitle: string; // 부연 ("출근길에 비가 와요" 등)
+}
 
-  // 두 카드의 날짜 라벨. 같으면 그 날, 다르면(애매 구간) "오늘"로.
-  const startDay = dayLabel(settings.commuteStart);
-  const endDay = dayLabel(settings.commuteEnd);
-  const dayWord = startDay === endDay ? startDay : "오늘";
+// 한 날(today/tomorrow)의 결론 한 줄을 만든다.
+// 우산 판정 = 그 날 살아있는(null 아닌) 슬롯 중 하나라도 needUmbrella.
+// 부연: 어느 시점이 비인지(출근길/퇴근길/하루 종일/안 비).
+function dayConclusion(dayWord: "오늘" | "내일", day: DayForecast): MessageLine {
+  const m = day.morning?.needUmbrella ?? false;
+  const e = day.evening?.needUmbrella ?? false;
+  const needUmbrella = m || e;
 
   const conclusion = needUmbrella
     ? `${dayWord}은 우산 챙기세요`
     : `${dayWord}은 우산 필요 없어요`;
 
   let subtitle: string;
-  if (m && e) subtitle = "하루 종일 비가 와요";
-  else if (m) subtitle = "출근길에 비가 와요";
-  else if (e) subtitle = "퇴근길에 비가 와요";
+  if (m && e) subtitle = `${dayWord} 하루 종일 비가 와요`;
+  else if (m) subtitle = `${dayWord} 출근길엔 비가 와요`;
+  else if (e) subtitle = `${dayWord} 퇴근길엔 비가 와요`;
   else subtitle = "우산 없이 가벼워요";
 
-  return { conclusion, subtitle };
+  return { dayWord, conclusion, subtitle };
+}
+
+// 상단 메시지를 만든다. 데이터(살아있는 슬롯)로 한 줄/두 줄을 결정한다.
+//  - 출근 전: today.morning + today.evening 살아있음 → 오늘 한 줄.
+//  - 출퇴근 사이: today.morning=null(출근 지남) + today.evening 살아있음 + tomorrow 살아있음 → 두 줄(오늘+내일).
+//  - 퇴근 후: today 전부 null, tomorrow 만 살아있음 → 내일 한 줄.
+// needUmbrella: 보여주는 줄들 중 하나라도 비면 큰 아이콘 ☔️.
+function mainMessage(forecast: ForecastResponse): {
+  lines: MessageLine[];
+  needUmbrella: boolean;
+} {
+  const { today, tomorrow } = forecast;
+  const todayAlive = !!(today.morning || today.evening);
+  const tomorrowAlive = !!(tomorrow.morning || tomorrow.evening);
+
+  // 출퇴근 사이(애매 구간): 출근 지나(today.morning=null) 오늘 일부만 남고 내일도 관심사 → 두 줄.
+  const twoLines = todayAlive && tomorrowAlive && !today.morning;
+
+  let lines: MessageLine[];
+  if (twoLines) {
+    lines = [dayConclusion("오늘", today), dayConclusion("내일", tomorrow)];
+  } else if (todayAlive) {
+    lines = [dayConclusion("오늘", today)];
+  } else {
+    lines = [dayConclusion("내일", tomorrow)];
+  }
+
+  const dayNeedsUmbrella = (d: DayForecast) =>
+    (d.morning?.needUmbrella ?? false) || (d.evening?.needUmbrella ?? false);
+  const needUmbrella = twoLines
+    ? dayNeedsUmbrella(today) || dayNeedsUmbrella(tomorrow)
+    : dayNeedsUmbrella(todayAlive ? today : tomorrow);
+
+  return { lines, needUmbrella };
 }
 
 const styles = StyleSheet.create({
@@ -237,6 +290,11 @@ const styles = StyleSheet.create({
   conclusionIcon: { fontSize: 72 },
   conclusionText: { fontSize: 34, fontWeight: "700", marginTop: 16, textAlign: "center" },
   subtitle: { fontSize: 17, color: "#8E8E93", marginTop: 8, textAlign: "center" },
+  // 두 줄(오늘+내일): 한 줄 큰 결론보다 절제된 중간 크기로 균형. HIG 톤.
+  twoLines: { marginTop: 16, alignItems: "center", gap: 16 },
+  lineBlock: { alignItems: "center" },
+  lineConclusion: { fontSize: 24, fontWeight: "700", textAlign: "center" },
+  lineSubtitle: { fontSize: 15, color: "#8E8E93", marginTop: 4, textAlign: "center" },
   // 카드는 결론 바로 아래에 자리. 두 카드 높이는 CommuteCard 고정 높이로 동일.
   cards: {
     flexDirection: "row",
