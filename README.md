@@ -15,7 +15,7 @@
 | [docs/PROJECT.md](./docs/PROJECT.md) | **여기부터** — 개요·컨셉·스택·구조 (진입점) |
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 서버/앱 실제 구현 상세 (API·DB·컴포넌트) |
 | [docs/WEATHER-API.md](./docs/WEATHER-API.md) | 기상청 API·base_time 마진·우산 판정 로직 |
-| [docs/DECISIONS.md](./docs/DECISIONS.md) | 확정된 설계 결정 + 미구현 TODO + 운영 체크리스트 |
+| [docs/DECISIONS.md](./docs/DECISIONS.md) | 확정된 설계 결정 (왜 그렇게 정했는지) |
 | [docs/design-main-screen.md](./docs/design-main-screen.md) | 메인 화면 디자인 확정안 |
 | [docs/kma-guide/](./docs/kma-guide/README.md) | 기상청 공식 활용가이드 (출처) |
 
@@ -57,4 +57,4 @@ pnpm install
 pnpm expo start --lan  # 실기기는 app.json extra.apiBaseUrl 의 LAN IP 사용
 ```
 
-자세한 빌드·검증·운영은 [docs/PROJECT.md](./docs/PROJECT.md), [docs/DECISIONS.md](./docs/DECISIONS.md) 참고.
+자세한 구조·설계 결정은 [docs/PROJECT.md](./docs/PROJECT.md), [docs/DECISIONS.md](./docs/DECISIONS.md) 참고.
