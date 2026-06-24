@@ -25,6 +25,12 @@ func main() {
 	}
 	defer st.Close()
 
+	// 기동 시 마이그레이션 1회 적용(idempotent). 배포 환경 무관하게 스키마를 보장한다.
+	if err := st.Migrate(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+	log.Println("migrations applied ✓")
+
 	// 기상청 키는 /forecast 계열에서만 필요. /sync 만 쓰는 동안엔 비어 있어도 서버가 떠야 한다.
 	// (활용신청 전 단계 지원) — 키 없이 /forecast 호출 시 핸들러에서 에러 반환.
 	kmaKey := os.Getenv("KMA_SERVICE_KEY")

@@ -1,5 +1,6 @@
-// Command migrate 는 migrations/ 의 .sql 파일을 순서대로 적용한다.
-// 의존성 없이 단순 실행 — 작은 프로젝트라 전용 마이그레이션 툴은 과함.
+// Command migrate 는 마이그레이션을 수동으로 적용한다(배포와 별개로 직접 돌리고 싶을 때).
+// 실제 마이그레이션 로직·SQL 은 internal/store 에 embed 되어 있어, api 기동 시 자동 적용과
+// 동일한 코드를 쓴다. 어디서 실행하든(파일 경로 무관) 동작한다.
 //
 // 사용: DATABASE_URL=... go run ./cmd/migrate
 package main
@@ -8,10 +9,8 @@ import (
 	"context"
 	"log"
 	"os"
-	"path/filepath"
-	"sort"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/twkim8548/grab-umbrella/server/internal/store"
 )
 
 func main() {
@@ -21,35 +20,14 @@ func main() {
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	st, err := store.New(ctx, dsn)
 	if err != nil {
 		log.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	defer st.Close()
 
-	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("ping: %v", err)
-	}
-	log.Println("connected ✓")
-
-	files, err := filepath.Glob("migrations/*.sql")
-	if err != nil {
-		log.Fatalf("glob: %v", err)
-	}
-	sort.Strings(files)
-	if len(files) == 0 {
-		log.Fatal("no migration files found (run from server/ dir)")
-	}
-
-	for _, f := range files {
-		sql, err := os.ReadFile(f)
-		if err != nil {
-			log.Fatalf("read %s: %v", f, err)
-		}
-		if _, err := pool.Exec(ctx, string(sql)); err != nil {
-			log.Fatalf("apply %s: %v", f, err)
-		}
-		log.Printf("applied %s ✓", f)
+	if err := st.Migrate(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
 	}
 	log.Println("all migrations applied ✓")
 }
