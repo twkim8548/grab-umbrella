@@ -9,6 +9,10 @@ server/bin/
 .env.local
 *.local
 
+# --- 내부 전용 노트 (남은 작업·운영 메모 등, git 업로드 안 함) ---
+*.local.md
+docs/internal/
+
 # --- Node / Expo ---
 node_modules/
 app/.expo/
