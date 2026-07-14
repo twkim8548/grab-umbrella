@@ -36,7 +36,7 @@
 }
 ```
 
-**처리**: 주소 → 카카오 지오코딩(위경도) → `grid.ToGrid`(LCC DFS 격자 nx,ny) → `devices` upsert.
+**처리**: 같은 push token에 저장된 주소와 비교해 변경된 주소만 카카오 지오코딩(위경도) → `grid.ToGrid`(LCC DFS 격자 nx,ny) 후 `devices` upsert. 신규 기기는 집·회사 양쪽을 변환한다.
 **에러**: 400(필수 누락), 422(주소 못 찾음, 본문에 사유), 500(upsert 실패).
 
 ### GET /forecast

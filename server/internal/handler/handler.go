@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,11 +27,22 @@ type Handler struct {
 	// CronSecret 은 /cron/tick 호출을 보호하는 공유 시크릿. 비어 있으면 /cron/tick 비활성.
 	CronSecret string
 	forecast   forecastProvider // 테스트용 대체 구현. nil이면 Weather 사용.
+	syncStore  deviceSyncStore  // 테스트용 대체 구현. nil이면 Store 사용.
+	geocoder   geocodeProvider  // 테스트용 대체 구현. nil이면 Geocode 사용.
 }
 
 type forecastProvider interface {
 	VilageForecast(context.Context, int, int) ([]weather.FcstItem, error)
 	UltraSrtForecast(context.Context, int, int) ([]weather.FcstItem, error)
+}
+
+type deviceSyncStore interface {
+	GetByToken(context.Context, string) (*store.Device, error)
+	Upsert(context.Context, store.Device) error
+}
+
+type geocodeProvider interface {
+	Geocode(context.Context, string) (lat, lng float64, err error)
 }
 
 // syncRequest — POST /sync 입력. 앱이 도로명 주소를 보내면 서버가 위경도→격자로 변환.
@@ -57,26 +69,31 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "push_token required", http.StatusBadRequest)
 		return
 	}
+	req.HomeAddress = strings.TrimSpace(req.HomeAddress)
+	req.WorkAddress = strings.TrimSpace(req.WorkAddress)
 	if req.HomeAddress == "" || req.WorkAddress == "" {
 		http.Error(w, "home_address and work_address required", http.StatusBadRequest)
 		return
 	}
 
-	homeLat, homeLng, err := h.Geocode.Geocode(r.Context(), req.HomeAddress)
-	if err != nil {
-		log.Printf("sync: geocode home %q: %v", req.HomeAddress, err)
-		http.Error(w, "집 주소를 찾을 수 없습니다", http.StatusUnprocessableEntity)
-		return
-	}
-	workLat, workLng, err := h.Geocode.Geocode(r.Context(), req.WorkAddress)
-	if err != nil {
-		log.Printf("sync: geocode work %q: %v", req.WorkAddress, err)
-		http.Error(w, "회사 주소를 찾을 수 없습니다", http.StatusUnprocessableEntity)
+	syncStore := h.syncStoreProvider()
+	existing, err := syncStore.GetByToken(r.Context(), req.PushToken)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		log.Printf("sync: GetByToken: %v", err)
+		http.Error(w, "lookup failed", http.StatusInternalServerError)
 		return
 	}
 
-	hnx, hny := grid.ToGrid(homeLat, homeLng)
-	wnx, wny := grid.ToGrid(workLat, workLng)
+	hnx, hny, wnx, wny, geoErr := resolveSyncGrids(r.Context(), h.geocodeProvider(), req, existing)
+	if geoErr != nil {
+		log.Printf("sync: geocode %s %q: %v", geoErr.kind, geoErr.address, geoErr.err)
+		if geoErr.kind == "home" {
+			http.Error(w, "집 주소를 찾을 수 없습니다", http.StatusUnprocessableEntity)
+		} else {
+			http.Error(w, "회사 주소를 찾을 수 없습니다", http.StatusUnprocessableEntity)
+		}
+		return
+	}
 
 	d := store.Device{
 		PushToken:            req.PushToken,
@@ -91,11 +108,57 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		CommuteDays:          normalizeDays(req.CommuteDays),
 		NotificationsEnabled: notificationsEnabled(req.NotificationsEnabled),
 	}
-	if err := h.Store.Upsert(r.Context(), d); err != nil {
+	if err := syncStore.Upsert(r.Context(), d); err != nil {
 		http.Error(w, "upsert failed", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+type syncGeocodeError struct {
+	kind    string
+	address string
+	err     error
+}
+
+func (e *syncGeocodeError) Error() string { return e.err.Error() }
+
+func resolveSyncGrids(ctx context.Context, geocoder geocodeProvider, req syncRequest, existing *store.Device) (hnx, hny, wnx, wny int, syncErr *syncGeocodeError) {
+	if existing != nil && strings.TrimSpace(existing.HomeAddress) == req.HomeAddress {
+		hnx, hny = existing.HomeNx, existing.HomeNy
+	} else {
+		lat, lng, err := geocoder.Geocode(ctx, req.HomeAddress)
+		if err != nil {
+			return 0, 0, 0, 0, &syncGeocodeError{kind: "home", address: req.HomeAddress, err: err}
+		}
+		hnx, hny = grid.ToGrid(lat, lng)
+	}
+
+	if existing != nil && strings.TrimSpace(existing.WorkAddress) == req.WorkAddress {
+		wnx, wny = existing.WorkNx, existing.WorkNy
+	} else {
+		lat, lng, err := geocoder.Geocode(ctx, req.WorkAddress)
+		if err != nil {
+			return 0, 0, 0, 0, &syncGeocodeError{kind: "work", address: req.WorkAddress, err: err}
+		}
+		wnx, wny = grid.ToGrid(lat, lng)
+	}
+
+	return hnx, hny, wnx, wny, nil
+}
+
+func (h *Handler) syncStoreProvider() deviceSyncStore {
+	if h.syncStore != nil {
+		return h.syncStore
+	}
+	return h.Store
+}
+
+func (h *Handler) geocodeProvider() geocodeProvider {
+	if h.geocoder != nil {
+		return h.geocoder
+	}
+	return h.Geocode
 }
 
 // dayForecast 는 하루치(출근/퇴근) 카드다. 데이터 없거나 이미 지난 시점은 null.

@@ -67,14 +67,16 @@ ON CONFLICT (push_token) DO UPDATE SET
 	return err
 }
 
-// GetByToken 은 /forecast 에서 push_token 으로 위치·시각 조회.
+// GetByToken 은 /forecast 와 /sync 에서 push_token 으로 위치·시각·주소 조회.
 func (s *Store) GetByToken(ctx context.Context, token string) (*Device, error) {
 	const q = `SELECT push_token, home_nx, home_ny, work_nx, work_ny,
+	                  COALESCE(home_address, ''), COALESCE(work_address, ''),
 	                  commute_start, commute_end, notifications_enabled
 	           FROM devices WHERE push_token = $1;`
 	var d Device
 	err := s.pool.QueryRow(ctx, q, token).Scan(
 		&d.PushToken, &d.HomeNx, &d.HomeNy, &d.WorkNx, &d.WorkNy,
+		&d.HomeAddress, &d.WorkAddress,
 		&d.CommuteStart, &d.CommuteEnd, &d.NotificationsEnabled)
 	if err != nil {
 		return nil, err
