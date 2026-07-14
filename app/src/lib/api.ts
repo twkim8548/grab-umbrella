@@ -9,10 +9,15 @@ const BASE_URL: string =
   Constants.expoConfig?.extra?.apiBaseUrl ?? "http://192.168.0.79:8080";
 
 // POST /sync — 설정이 바뀔 때마다 호출. 주소를 올리면 서버가 지오코딩/격자 변환.
-export async function sync(pushToken: string, s: Settings): Promise<void> {
+export async function sync(
+  pushToken: string,
+  s: Settings,
+  signal?: AbortSignal
+): Promise<void> {
   const res = await fetch(`${BASE_URL}/sync`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal,
     body: JSON.stringify({
       push_token: pushToken,
       home_address: s.homeAddress,
@@ -45,11 +50,14 @@ const MOCK_FORECAST: string | undefined = Constants.expoConfig?.extra?.mockForec
 
 // GET /forecast — 메인 화면용 출근/퇴근 카드 데이터. 슬롯은 nullable.
 // 404 는 "서버에 미등록"(신규기기/미동기화)을 의미하므로 NOT_REGISTERED 로 구분해 던진다.
-export async function getForecast(pushToken: string): Promise<ForecastResponse> {
+export async function getForecast(
+  pushToken: string,
+  signal?: AbortSignal
+): Promise<ForecastResponse> {
   const query = MOCK_FORECAST
     ? `mock=${encodeURIComponent(MOCK_FORECAST)}`
     : `push_token=${encodeURIComponent(pushToken)}`;
-  const res = await fetch(`${BASE_URL}/forecast?${query}`);
+  const res = await fetch(`${BASE_URL}/forecast?${query}`, { signal });
   if (res.status === 404) throw new Error(NOT_REGISTERED);
   if (!res.ok) throw new Error(`forecast failed: ${res.status}`);
   return (await res.json()) as ForecastResponse;

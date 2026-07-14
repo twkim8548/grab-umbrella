@@ -38,17 +38,23 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
   const [sheet, setSheet] = useState<SheetTarget>(null);
   const [refreshing, setRefreshing] = useState(false);
   const loadRequestRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
   const hasReadyDataRef = useRef(false);
 
   // silent=true 면 전체 화면을 loading 스피너로 덮지 않는다(pull-to-refresh 용).
   // 결과는 동일하게 ready/sync-needed/error 로 귀결된다.
   const load = useCallback(async (silent = false) => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     const requestId = ++loadRequestRef.current;
-    const isLatest = () => requestId === loadRequestRef.current;
+    const isLatest = () =>
+      requestId === loadRequestRef.current && !controller.signal.aborted;
     let displayedCache = false;
     if (!silent) setState({ kind: "loading" });
     try {
       const settings = await loadSettings();
+      if (!isLatest()) return;
       if (!settings) {
         if (isLatest()) setState({ kind: "no-settings" });
         return;
@@ -58,6 +64,7 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       // 조회는 그대로 계속해 최신 데이터로 교체한다.
       if (!silent) {
         const cachedForecast = await loadForecastCache(settings);
+        if (!isLatest()) return;
         if (cachedForecast && isLatest()) {
           displayedCache = true;
           hasReadyDataRef.current = true;
@@ -66,16 +73,19 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       }
       // 토큰은 권한과 무관하게 항상 발급된다(dev 폴백 보장). 메인은 forecast 호출용으로만 사용.
       const token = await getPushToken();
+      if (!isLatest()) return;
       let forecast: ForecastResponse;
       try {
-        forecast = await getForecast(token);
+        forecast = await getForecast(token, controller.signal);
       } catch (e) {
         if (!(e instanceof Error) || e.message !== NOT_REGISTERED) throw e;
 
         // 최초 sync 실패, 앱 재설치, dev 토큰→정식 Expo 토큰 전환은 모두 서버에서
         // "미등록 토큰"으로 보인다. 로컬 설정이 주인이므로 한 번 자동 복구한 뒤 재조회한다.
-        await sync(token, settings);
-        forecast = await getForecast(token);
+        if (!isLatest()) return;
+        await sync(token, settings, controller.signal);
+        if (!isLatest()) return;
+        forecast = await getForecast(token, controller.signal);
       }
       if (isLatest()) {
         await saveForecastCache(settings, forecast);
@@ -85,6 +95,7 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
         setState({ kind: "ready", settings, forecast });
       }
     } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
       // Settings 복귀/새로고침으로 더 최신 요청이 시작됐다면 오래된 응답은 버린다.
       if (!isLatest()) return;
       // 이미 표시 중인 예보를 갱신하다 실패했다면 기존 화면을 유지한다. 일시적인
@@ -98,6 +109,8 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       }
       const message = e instanceof Error ? e.message : "예보를 불러오지 못했습니다.";
       setState({ kind: "error", message });
+    } finally {
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, []);
 
@@ -119,6 +132,11 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       // 최초 진입은 전체 로딩을 보여주되, Settings 에서 돌아올 때는 기존 예보를
       // 그대로 둔 채 백그라운드에서 새 설정·예보로 교체한다.
       void load(hasReadyDataRef.current);
+      return () => {
+        loadAbortRef.current?.abort();
+        loadAbortRef.current = null;
+        ++loadRequestRef.current;
+      };
     }, [load])
   );
 

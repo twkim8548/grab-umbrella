@@ -35,10 +35,56 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   }
 }
 
+type PushTokenOptions = {
+  forceRefresh?: boolean;
+  refreshDevToken?: boolean;
+};
+
+let cachedPushToken: string | null = null;
+let tokenGeneration = 0;
+let pendingToken: {
+  generation: number;
+  forceRefresh: boolean;
+  promise: Promise<string>;
+} | null = null;
+
 // 식별 토큰을 반환. 권한 거부와 무관하게 항상 토큰을 돌려준다(메인 동작 보장).
 // 정식 Expo 푸시 토큰은 권한 granted + EAS projectId 가 필요하다(SDK 49+).
 // 둘 중 하나라도 없으면 디바이스 식별자 기반 dev 폴백 토큰을 쓴다.
-export async function getPushToken(): Promise<string> {
+// 일반 호출은 앱 세션 동안 캐시하고, 동시에 들어온 발급 요청은 하나로 합친다.
+// 권한 상태가 바뀐 직후에는 forceRefresh 로 dev 토큰을 정식 Expo 토큰으로 갱신한다.
+export function getPushToken(options: PushTokenOptions = {}): Promise<string> {
+  if (options.refreshDevToken) {
+    // 먼저 세션 캐시/진행 중 요청을 재사용하고, 결과가 dev 폴백일 때만 정식 토큰
+    // 발급을 한 번 더 시도한다. 이미 정식 토큰이면 네트워크를 다시 호출하지 않는다.
+    return getPushToken().then((token) =>
+      token.startsWith("dev-") ? getPushToken({ forceRefresh: true }) : token
+    );
+  }
+
+  const forceRefresh = options.forceRefresh === true;
+
+  if (!forceRefresh && cachedPushToken) return Promise.resolve(cachedPushToken);
+  if (pendingToken && (!forceRefresh || pendingToken.forceRefresh)) {
+    return pendingToken.promise;
+  }
+
+  const generation = forceRefresh ? ++tokenGeneration : tokenGeneration;
+  const promise = issuePushToken().then((token) => {
+    // force refresh 중에 먼저 시작한 요청이 늦게 끝나도 새 토큰 캐시를 덮지 않는다.
+    if (generation === tokenGeneration) cachedPushToken = token;
+    return token;
+  }).finally(() => {
+    if (pendingToken?.generation === generation && pendingToken.promise === promise) {
+      pendingToken = null;
+    }
+  });
+
+  pendingToken = { generation, forceRefresh, promise };
+  return promise;
+}
+
+async function issuePushToken(): Promise<string> {
   const projectId =
     Constants.expoConfig?.extra?.eas?.projectId ??
     Constants.easConfig?.projectId;
@@ -63,8 +109,8 @@ export async function getPushToken(): Promise<string> {
 // 기존 호출부 호환용. 권한을 요청하고, granted 여부와 무관하게 토큰을 반환한다.
 // (과거 시그니처는 거부 시 null 이었으나, 토큰은 항상 필요하므로 dev 폴백을 보장한다.)
 export async function registerForPushToken(): Promise<string> {
-  await ensureNotificationPermission();
-  return getPushToken();
+  const granted = await ensureNotificationPermission();
+  return getPushToken({ refreshDevToken: granted });
 }
 
 // 디바이스 고유 식별자. iOS는 idForVendor, Android는 androidId.

@@ -122,7 +122,8 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
       }
 
       // 3) 토큰 획득(권한과 무관하게 항상 발급) 후 서버 동기화.
-      const token = await getPushToken();
+      // 권한 허용 직후에는 세션에 남아 있던 dev 폴백 대신 정식 Expo 토큰을 다시 발급한다.
+      const token = await getPushToken({ refreshDevToken: notificationsEnabled && granted });
       await sync(token, settings);
 
       if (notificationsEnabled && !granted) {
