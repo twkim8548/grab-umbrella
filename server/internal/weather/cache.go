@@ -23,10 +23,14 @@ const (
 type forecastCache struct {
 	mu      sync.Mutex
 	entries map[string][]FcstItem // key = "kind:nx:ny:baseDate:baseTime"
+	latest  map[string]string     // grid prefix -> latest "baseDate:baseTime"
 }
 
 func newForecastCache() *forecastCache {
-	return &forecastCache{entries: make(map[string][]FcstItem)}
+	return &forecastCache{
+		entries: make(map[string][]FcstItem),
+		latest:  make(map[string]string),
+	}
 }
 
 // cacheKey 는 종류·격자·발표본을 캐시키로 합성한다.
@@ -51,9 +55,15 @@ func (c *forecastCache) get(kind string, nx, ny int, baseDate, baseTime string) 
 func (c *forecastCache) put(kind string, nx, ny int, baseDate, baseTime string, items []FcstItem) {
 	key := cacheKey(kind, nx, ny, baseDate, baseTime)
 	prefix := gridPrefix(kind, nx, ny)
+	release := baseDate + ":" + baseTime
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// 발표 경계에서 이전 발표본 요청이 늦게 끝나더라도 이미 저장된 새 발표본을
+	// 지우거나 덮지 않는다.
+	if latest, ok := c.latest[prefix]; ok && release < latest {
+		return
+	}
 	// 같은 격자의 이전 발표본 정리(격자당 최신 1개만 유지).
 	for k := range c.entries {
 		if k != key && strings.HasPrefix(k, prefix) {
@@ -61,4 +71,5 @@ func (c *forecastCache) put(kind string, nx, ny int, baseDate, baseTime string, 
 		}
 	}
 	c.entries[key] = items
+	c.latest[prefix] = release
 }

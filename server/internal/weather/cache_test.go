@@ -69,6 +69,20 @@ func TestForecastCacheEvictsOldRelease(t *testing.T) {
 	}
 }
 
+func TestForecastCacheLateOldReleaseCannotEvictNew(t *testing.T) {
+	c := newForecastCache()
+	c.put(kindVilage, 60, 127, "20260623", "1100", []FcstItem{{FcstValue: "new"}})
+	// 발표 경계를 걸친 느린 0800 응답이 1100 응답 뒤에 도착한 상황.
+	c.put(kindVilage, 60, 127, "20260623", "0800", []FcstItem{{FcstValue: "old"}})
+
+	if _, ok := c.get(kindVilage, 60, 127, "20260623", "0800"); ok {
+		t.Error("late old release must not be cached")
+	}
+	if got, ok := c.get(kindVilage, 60, 127, "20260623", "1100"); !ok || got[0].FcstValue != "new" {
+		t.Fatalf("new release was evicted by late old response: ok=%v got=%+v", ok, got)
+	}
+}
+
 func TestForecastCacheConcurrent(t *testing.T) {
 	c := newForecastCache()
 	const goroutines = 50

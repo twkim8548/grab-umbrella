@@ -12,6 +12,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import CommuteCard from "../components/CommuteCard";
 import HourlySheet from "../components/HourlySheet";
 import { loadSettings } from "../storage/settings";
+import { loadForecastCache, saveForecastCache } from "../storage/forecast";
 import { getPushToken } from "../lib/push";
 import { getForecast, NOT_REGISTERED, sync } from "../lib/api";
 import { formatHHmm } from "../lib/format";
@@ -37,18 +38,31 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
   const [sheet, setSheet] = useState<SheetTarget>(null);
   const [refreshing, setRefreshing] = useState(false);
   const loadRequestRef = useRef(0);
+  const hasReadyDataRef = useRef(false);
 
   // silent=true 면 전체 화면을 loading 스피너로 덮지 않는다(pull-to-refresh 용).
   // 결과는 동일하게 ready/sync-needed/error 로 귀결된다.
   const load = useCallback(async (silent = false) => {
     const requestId = ++loadRequestRef.current;
     const isLatest = () => requestId === loadRequestRef.current;
+    let displayedCache = false;
     if (!silent) setState({ kind: "loading" });
     try {
       const settings = await loadSettings();
       if (!settings) {
         if (isLatest()) setState({ kind: "no-settings" });
         return;
+      }
+
+      // 앱 최초 진입에는 같은 설정의 신선한 예보를 즉시 보여주고, 아래 네트워크
+      // 조회는 그대로 계속해 최신 데이터로 교체한다.
+      if (!silent) {
+        const cachedForecast = await loadForecastCache(settings);
+        if (cachedForecast && isLatest()) {
+          displayedCache = true;
+          hasReadyDataRef.current = true;
+          setState({ kind: "ready", settings, forecast: cachedForecast });
+        }
       }
       // 토큰은 권한과 무관하게 항상 발급된다(dev 폴백 보장). 메인은 forecast 호출용으로만 사용.
       const token = await getPushToken();
@@ -63,10 +77,19 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
         await sync(token, settings);
         forecast = await getForecast(token);
       }
-      if (isLatest()) setState({ kind: "ready", settings, forecast });
+      if (isLatest()) {
+        await saveForecastCache(settings, forecast);
+      }
+      if (isLatest()) {
+        hasReadyDataRef.current = true;
+        setState({ kind: "ready", settings, forecast });
+      }
     } catch (e) {
       // Settings 복귀/새로고침으로 더 최신 요청이 시작됐다면 오래된 응답은 버린다.
       if (!isLatest()) return;
+      // 이미 표시 중인 예보를 갱신하다 실패했다면 기존 화면을 유지한다. 일시적인
+      // Lambda/KMA 지연 때문에 홈 전체가 에러 화면으로 바뀌지 않게 한다.
+      if ((silent && hasReadyDataRef.current) || displayedCache) return;
       // 404(NOT_REGISTERED): 서버에 미등록. 로컬 설정은 있으므로 "동기화 필요" 안내.
       // (네트워크/5xx 등 실제 오류만 재시도 가능한 error 로.)
       if (e instanceof Error && e.message === NOT_REGISTERED) {
@@ -93,7 +116,9 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
   // 최초 진입과 Settings 에서 돌아오는 매 focus 마다 로컬 설정과 예보를 다시 읽는다.
   useFocusEffect(
     useCallback(() => {
-      void load();
+      // 최초 진입은 전체 로딩을 보여주되, Settings 에서 돌아올 때는 기존 예보를
+      // 그대로 둔 채 백그라운드에서 새 설정·예보로 교체한다.
+      void load(hasReadyDataRef.current);
     }, [load])
   );
 

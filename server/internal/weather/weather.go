@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // Client 는 기상청 API 호출을 담당한다.
@@ -22,6 +24,8 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	cache      *forecastCache // 같은 격자·같은 발표본 1회만 조회(spec §4.6).
+	flights    singleflight.Group
+	now        func() time.Time
 }
 
 func New(serviceKey, baseURL string) *Client {
@@ -30,6 +34,7 @@ func New(serviceKey, baseURL string) *Client {
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		cache:      newForecastCache(),
+		now:        time.Now,
 	}
 }
 
@@ -72,7 +77,7 @@ type kmaResponse struct {
 // 파싱해 반환한다. base_date/base_time 은 BaseTime 으로 안전 마진을 두고 산출한다.
 // spec §4. 가공/슬라이스/캐싱은 다음 단계.
 func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, error) {
-	baseDate, baseTime := BaseTime(time.Now())
+	baseDate, baseTime := BaseTime(c.now())
 
 	// 캐시 적중: 같은 격자·같은 발표본은 재호출 없이 공유한다(spec §4.6).
 	if c.cache != nil {
@@ -93,19 +98,53 @@ func (c *Client) VilageForecast(ctx context.Context, nx, ny int) ([]FcstItem, er
 
 	endpoint := c.baseURL + "/getVilageFcst?" + q.Encode()
 
-	body, err := c.getWithRetry(ctx, endpoint)
-	if err != nil {
+	return c.fetchShared(ctx, kindVilage, nx, ny, baseDate, baseTime, endpoint)
+}
+
+const sharedFetchTimeout = 12 * time.Second
+
+// fetchShared 는 같은 종류·격자·발표본의 동시 cache miss 를 기상청 호출 하나로 합친다.
+// 공유 호출은 최초 요청의 취소와 분리해 다른 대기자를 보호하되 자체 상한을 둔다.
+func (c *Client) fetchShared(ctx context.Context, kind string, nx, ny int, baseDate, baseTime, endpoint string) ([]FcstItem, error) {
+	// 이미 끝난 요청이 ultra 실패 후 village fallback 같은 새 공유 호출을 만들지 않는다.
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	items, err := parseVilageFcst(body)
-	if err != nil {
-		return nil, err
+	key := cacheKey(kind, nx, ny, baseDate, baseTime)
+	result := c.flights.DoChan(key, func() (any, error) {
+		// 첫 cache miss 뒤 다른 goroutine 이 먼저 채운 경우 외부 호출을 생략한다.
+		if c.cache != nil {
+			if items, ok := c.cache.get(kind, nx, ny, baseDate, baseTime); ok {
+				return items, nil
+			}
+		}
+
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sharedFetchTimeout)
+		defer cancel()
+		body, err := c.getWithRetry(fetchCtx, endpoint)
+		if err != nil {
+			return nil, err
+		}
+		items, err := parseVilageFcst(body)
+		if err != nil {
+			return nil, err
+		}
+		if c.cache != nil {
+			c.cache.put(kind, nx, ny, baseDate, baseTime, items)
+		}
+		return items, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-result:
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.([]FcstItem), nil
 	}
-	if c.cache != nil {
-		c.cache.put(kindVilage, nx, ny, baseDate, baseTime, items)
-	}
-	return items, nil
 }
 
 // getWithRetry 는 endpoint 를 GET 하고, 429/5xx(일시적 실패)면 지수 backoff 로 재시도한다.
@@ -239,7 +278,7 @@ func atoiDefault(s string, def int) int {
 // 안전 마진(매시 45분 제공)을 두고 산출한다. 응답 구조는 단기예보와 동일하므로
 // parseVilageFcst 를 재사용한다. 캐시는 단기예보와 종류(kind)로 구분한다(spec §4.6).
 func (c *Client) UltraSrtForecast(ctx context.Context, nx, ny int) ([]FcstItem, error) {
-	baseDate, baseTime := UltraSrtBaseTime(time.Now())
+	baseDate, baseTime := UltraSrtBaseTime(c.now())
 
 	if c.cache != nil {
 		if items, ok := c.cache.get(kindUltra, nx, ny, baseDate, baseTime); ok {
@@ -259,17 +298,5 @@ func (c *Client) UltraSrtForecast(ctx context.Context, nx, ny int) ([]FcstItem, 
 
 	endpoint := c.baseURL + "/getUltraSrtFcst?" + q.Encode()
 
-	body, err := c.getWithRetry(ctx, endpoint)
-	if err != nil {
-		return nil, err
-	}
-
-	items, err := parseVilageFcst(body)
-	if err != nil {
-		return nil, err
-	}
-	if c.cache != nil {
-		c.cache.put(kindUltra, nx, ny, baseDate, baseTime, items)
-	}
-	return items, nil
+	return c.fetchShared(ctx, kindUltra, nx, ny, baseDate, baseTime, endpoint)
 }

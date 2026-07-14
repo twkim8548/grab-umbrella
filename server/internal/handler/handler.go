@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,12 @@ type Handler struct {
 	Push    *push.Client // /cron/tick 푸시 발송용
 	// CronSecret 은 /cron/tick 호출을 보호하는 공유 시크릿. 비어 있으면 /cron/tick 비활성.
 	CronSecret string
+	forecast   forecastProvider // 테스트용 대체 구현. nil이면 Weather 사용.
+}
+
+type forecastProvider interface {
+	VilageForecast(context.Context, int, int) ([]weather.FcstItem, error)
+	UltraSrtForecast(context.Context, int, int) ([]weather.FcstItem, error)
 }
 
 // syncRequest — POST /sync 입력. 앱이 도로명 주소를 보내면 서버가 위경도→격자로 변환.
@@ -135,29 +142,57 @@ func (h *Handler) Forecast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().In(time.FixedZone("KST", 9*60*60))
+	resp := h.buildForecastResponse(r.Context(), now, *dev)
+	writeJSON(w, resp)
+}
+
+func (h *Handler) buildForecastResponse(ctx context.Context, now time.Time, dev store.Device) forecastResponse {
 	today := now.Format("20060102")
 	tomorrow := now.AddDate(0, 0, 1).Format("20060102")
 
 	mBefore, mAfter := weather.MorningWindow()
 	eBefore, eAfter := weather.EveningWindow()
 
-	// 집 격자 = 출근 카드, 회사 격자 = 퇴근 카드. 같은 격자의 단기예보는 weather 내부
-	// 캐시(같은 발표본)로 공유되므로, 4시점이 격자별 1회 호출로 커버된다(단기는 글피까지 제공).
-	var resp forecastResponse
-	if card, ok := h.buildCardForDate(r.Context(), now, "today.morning", today, dev.CommuteStart, dev.HomeNx, dev.HomeNy, mBefore, mAfter); ok {
-		resp.Today.Morning = &card
+	// 집 출근(오늘→내일)과 회사 퇴근(오늘→내일)을 병렬 처리한다. 각 worker 내부는
+	// 순차 실행해 첫 호출이 채운 같은 격자 캐시를 다음 날짜가 재사용한다.
+	weatherCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	type commuteResult struct {
+		today    *weather.SlotCard
+		tomorrow *weather.SlotCard
 	}
-	if card, ok := h.buildCardForDate(r.Context(), now, "today.evening", today, dev.CommuteEnd, dev.WorkNx, dev.WorkNy, eBefore, eAfter); ok {
-		resp.Today.Evening = &card
-	}
-	if card, ok := h.buildCardForDate(r.Context(), now, "tomorrow.morning", tomorrow, dev.CommuteStart, dev.HomeNx, dev.HomeNy, mBefore, mAfter); ok {
-		resp.Tomorrow.Morning = &card
-	}
-	if card, ok := h.buildCardForDate(r.Context(), now, "tomorrow.evening", tomorrow, dev.CommuteEnd, dev.WorkNx, dev.WorkNy, eBefore, eAfter); ok {
-		resp.Tomorrow.Evening = &card
+	var morning, evening commuteResult
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		morning = h.buildCommuteCards(weatherCtx, now, "morning", today, tomorrow, dev.CommuteStart, dev.HomeNx, dev.HomeNy, mBefore, mAfter)
+	}()
+	go func() {
+		defer wg.Done()
+		evening = h.buildCommuteCards(weatherCtx, now, "evening", today, tomorrow, dev.CommuteEnd, dev.WorkNx, dev.WorkNy, eBefore, eAfter)
+	}()
+	wg.Wait()
+
+	resp := forecastResponse{
+		Today:    dayForecast{Morning: morning.today, Evening: evening.today},
+		Tomorrow: dayForecast{Morning: morning.tomorrow, Evening: evening.tomorrow},
 	}
 
-	writeJSON(w, resp)
+	return resp
+}
+
+func (h *Handler) buildCommuteCards(ctx context.Context, now time.Time, name, today, tomorrow, commute string, nx, ny, before, after int) (result struct {
+	today    *weather.SlotCard
+	tomorrow *weather.SlotCard
+}) {
+	if card, ok := h.buildCardForDate(ctx, now, "today."+name, today, commute, nx, ny, before, after); ok {
+		result.today = &card
+	}
+	if card, ok := h.buildCardForDate(ctx, now, "tomorrow."+name, tomorrow, commute, nx, ny, before, after); ok {
+		result.tomorrow = &card
+	}
+	return result
 }
 
 // buildCardForDate 는 명시한 날짜(fcstDate "YYYYMMDD")의 한 슬롯 카드를 만든다(spec §4.1).
@@ -179,7 +214,7 @@ func (h *Handler) buildCardForDate(ctx context.Context, now time.Time, slot, fcs
 	}
 
 	if weather.WithinUltraRange(now, fcstDate, fcstTime) {
-		items, err := h.Weather.UltraSrtForecast(ctx, nx, ny)
+		items, err := h.weatherProvider().UltraSrtForecast(ctx, nx, ny)
 		if err != nil {
 			log.Printf("forecast: %s ultra(%d,%d) failed, falling back to vilage: %v", slot, nx, ny, err)
 		} else if card, ok := weather.BuildSlotCard(items, fcstDate, fcstTime, before, after); ok {
@@ -190,7 +225,7 @@ func (h *Handler) buildCardForDate(ctx context.Context, now time.Time, slot, fcs
 		}
 	}
 
-	items, err := h.Weather.VilageForecast(ctx, nx, ny)
+	items, err := h.weatherProvider().VilageForecast(ctx, nx, ny)
 	if err != nil {
 		log.Printf("forecast: %s vilage(%d,%d) failed: %v", slot, nx, ny, err)
 		return weather.SlotCard{}, false
@@ -200,6 +235,13 @@ func (h *Handler) buildCardForDate(ctx context.Context, now time.Time, slot, fcs
 		log.Printf("forecast: %s using village (short-term) forecast (%d,%d @ %s)", slot, nx, ny, fcstTime)
 	}
 	return card, ok
+}
+
+func (h *Handler) weatherProvider() forecastProvider {
+	if h.forecast != nil {
+		return h.forecast
+	}
+	return h.Weather
 }
 
 // ForecastNow 는 GET /forecast/now (선택). 초단기실황 "지금 바깥". spec §3.
