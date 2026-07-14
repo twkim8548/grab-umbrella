@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Modal, View, Text, Pressable, ActivityIndicator, SafeAreaView, StyleSheet } from "react-native";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent } from "react-native-webview";
@@ -28,7 +29,6 @@ const POSTCODE_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="wrap"></div>
-  <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
   <script>
     function post(obj) {
       if (window.ReactNativeWebView) {
@@ -40,20 +40,35 @@ const POSTCODE_HTML = `<!DOCTYPE html>
     function embedPostcode() {
       if (embedded) return;
       if (typeof daum === 'undefined' || !daum.Postcode) return;
-      embedded = true;
-      new daum.Postcode({
-        oncomplete: function (data) {
-          post(data);
-        },
-        width: '100%',
-        height: '100%',
-      }).embed(document.getElementById('wrap'));
+      try {
+        new daum.Postcode({
+          oncomplete: function (data) {
+            post(data);
+          },
+          width: '100%',
+          height: '100%',
+        }).embed(document.getElementById('wrap'));
+        embedded = true;
+      } catch (e) {
+        post({__error: 'embed'});
+      }
     }
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    // parser-blocking 외부 script 는 CDN 이 멈추면 아래 watchdog 자체도 시작되지 않는다.
+    // 먼저 감시 타이머를 건 뒤 script 를 동적으로 로드한다.
+    var watchdog = setTimeout(function () {
+      if (!embedded) post({__error: 'timeout'});
+    }, 8000);
+    var script = document.createElement('script');
+    script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+    script.onload = function () {
       embedPostcode();
-    } else {
-      window.addEventListener('load', embedPostcode);
-    }
+      if (embedded) clearTimeout(watchdog);
+    };
+    script.onerror = function () {
+      clearTimeout(watchdog);
+      post({__error: 'script'});
+    };
+    document.head.appendChild(script);
   </script>
 </body>
 </html>`;
@@ -88,9 +103,17 @@ export default function AddressSearch({
   onSelected: (address: SelectedAddress) => void;
   onClose: () => void;
 }) {
+  const [loadError, setLoadError] = useState(false);
+  const [webviewKey, setWebviewKey] = useState(0);
+
+  useEffect(() => {
+    if (visible) setLoadError(false);
+  }, [visible]);
+
   const handleMessage = (event: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(event.nativeEvent.data) as {
+        __error?: string;
         roadAddress?: string;
         address?: string;
         jibunAddress?: string;
@@ -98,6 +121,10 @@ export default function AddressSearch({
         bname?: string;
         sigungu?: string;
       };
+      if (data.__error) {
+        setLoadError(true);
+        return;
+      }
       const roadAddress = data.roadAddress || data.address || "";
       const jibunAddress = data.jibunAddress || data.autoJibunAddress || "";
       // 동네 표시: 법정동(bname, "○○동/읍/면") 우선, 비었으면 시군구(sigungu) 폴백.
@@ -137,22 +164,40 @@ export default function AddressSearch({
             <Text style={styles.close}>닫기</Text>
           </Pressable>
         </View>
-        <WebView
-          style={styles.webview}
-          source={{ html: POSTCODE_HTML, baseUrl: "https://postcode.map.daum.net/" }}
-          originWhitelist={["*"]}
-          javaScriptEnabled
-          domStorageEnabled
-          setSupportMultipleWindows={false}
-          onMessage={handleMessage}
-          onShouldStartLoadWithRequest={handleShouldStartLoad}
-          startInLoadingState
-          renderLoading={() => (
-            <View style={styles.loading}>
-              <ActivityIndicator size="large" color="#007AFF" />
-            </View>
-          )}
-        />
+        {loadError ? (
+          <View style={styles.error}>
+            <Text style={styles.errorTitle}>주소 검색을 불러오지 못했어요.</Text>
+            <Text style={styles.errorBody}>네트워크 연결을 확인한 뒤 다시 시도해주세요.</Text>
+            <Pressable
+              style={styles.retryButton}
+              onPress={() => {
+                setLoadError(false);
+                setWebviewKey((key) => key + 1);
+              }}
+            >
+              <Text style={styles.retryText}>다시 시도</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <WebView
+            key={webviewKey}
+            style={styles.webview}
+            source={{ html: POSTCODE_HTML, baseUrl: "https://postcode.map.daum.net/" }}
+            originWhitelist={["*"]}
+            javaScriptEnabled
+            domStorageEnabled
+            setSupportMultipleWindows={false}
+            onMessage={handleMessage}
+            onShouldStartLoadWithRequest={handleShouldStartLoad}
+            onError={() => setLoadError(true)}
+            startInLoadingState
+            renderLoading={() => (
+              <View style={styles.loading}>
+                <ActivityIndicator size="large" color="#007AFF" />
+              </View>
+            )}
+          />
+        )}
       </SafeAreaView>
     </Modal>
   );
@@ -178,4 +223,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#fff",
   },
+  error: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+    gap: 10,
+  },
+  errorTitle: { fontSize: 18, fontWeight: "600", textAlign: "center" },
+  errorBody: { fontSize: 15, color: "#636366", textAlign: "center" },
+  retryButton: {
+    marginTop: 10,
+    borderRadius: 10,
+    backgroundColor: "#007AFF",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  retryText: { color: "#fff", fontSize: 16, fontWeight: "600" },
 });

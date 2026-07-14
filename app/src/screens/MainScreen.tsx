@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -8,11 +8,12 @@ import {
   RefreshControl,
   StyleSheet,
 } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import CommuteCard from "../components/CommuteCard";
 import HourlySheet from "../components/HourlySheet";
 import { loadSettings } from "../storage/settings";
 import { getPushToken } from "../lib/push";
-import { getForecast, NOT_REGISTERED } from "../lib/api";
+import { getForecast, NOT_REGISTERED, sync } from "../lib/api";
 import { formatHHmm } from "../lib/format";
 import type { DayForecast, ForecastResponse, Settings, SlotForecast } from "../lib/types";
 
@@ -35,22 +36,37 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [sheet, setSheet] = useState<SheetTarget>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const loadRequestRef = useRef(0);
 
   // silent=true 면 전체 화면을 loading 스피너로 덮지 않는다(pull-to-refresh 용).
   // 결과는 동일하게 ready/sync-needed/error 로 귀결된다.
   const load = useCallback(async (silent = false) => {
+    const requestId = ++loadRequestRef.current;
+    const isLatest = () => requestId === loadRequestRef.current;
     if (!silent) setState({ kind: "loading" });
     try {
       const settings = await loadSettings();
       if (!settings) {
-        setState({ kind: "no-settings" });
+        if (isLatest()) setState({ kind: "no-settings" });
         return;
       }
       // 토큰은 권한과 무관하게 항상 발급된다(dev 폴백 보장). 메인은 forecast 호출용으로만 사용.
       const token = await getPushToken();
-      const forecast = await getForecast(token);
-      setState({ kind: "ready", settings, forecast });
+      let forecast: ForecastResponse;
+      try {
+        forecast = await getForecast(token);
+      } catch (e) {
+        if (!(e instanceof Error) || e.message !== NOT_REGISTERED) throw e;
+
+        // 최초 sync 실패, 앱 재설치, dev 토큰→정식 Expo 토큰 전환은 모두 서버에서
+        // "미등록 토큰"으로 보인다. 로컬 설정이 주인이므로 한 번 자동 복구한 뒤 재조회한다.
+        await sync(token, settings);
+        forecast = await getForecast(token);
+      }
+      if (isLatest()) setState({ kind: "ready", settings, forecast });
     } catch (e) {
+      // Settings 복귀/새로고침으로 더 최신 요청이 시작됐다면 오래된 응답은 버린다.
+      if (!isLatest()) return;
       // 404(NOT_REGISTERED): 서버에 미등록. 로컬 설정은 있으므로 "동기화 필요" 안내.
       // (네트워크/5xx 등 실제 오류만 재시도 가능한 error 로.)
       if (e instanceof Error && e.message === NOT_REGISTERED) {
@@ -72,9 +88,14 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
     }
   }, [load]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // MainScreen 은 Settings 가 push 되어도 마운트된 채 남는다. 따라서 최초 mount 에서만
+  // 읽으면 설정 저장 후 돌아왔을 때도 이전 no-settings/sync-needed 상태가 남는다.
+  // 최초 진입과 Settings 에서 돌아오는 매 focus 마다 로컬 설정과 예보를 다시 읽는다.
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load])
+  );
 
   return (
     <View style={styles.container}>

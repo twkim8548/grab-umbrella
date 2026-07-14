@@ -16,6 +16,7 @@ docs/internal/
 # --- Node / Expo ---
 node_modules/
 app/.expo/
+app/ios/
 app/dist/
 app/web-build/
 *.log

@@ -13,6 +13,7 @@ import {
 import DateTimePicker, {
   type DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
+import { usePreventRemove } from "@react-navigation/native";
 import AddressSearch from "../components/AddressSearch";
 import type { SelectedAddress } from "../components/AddressSearch";
 import { loadSettings, saveSettings } from "../storage/settings";
@@ -54,6 +55,10 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
 
   const [picker, setPicker] = useState<null | "home" | "work">(null);
   const [saving, setSaving] = useState(false);
+
+  // 저장 중 edge swipe/시스템 뒤로가기로 화면이 먼저 닫히면 Main 이 /sync 완료 전에
+  // 조회해 미동기화 상태를 볼 수 있다. 저장이 끝날 때까지만 화면 제거를 막는다.
+  usePreventRemove(saving, () => {});
 
   // 진입 시 기존 값 채우기.
   useEffect(() => {
@@ -102,10 +107,12 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
       notificationsEnabled,
     };
 
+    let localSaved = false;
     setSaving(true);
     try {
       // 1) 로컬 저장 (설정의 주인은 로컬).
       await saveSettings(settings);
+      localSaved = true;
 
       // 2) 알림을 켰다면 권한을 보장(필요 시 요청)한다. 거부돼도 토큰은 dev 폴백으로 발급돼
       //    서버 동기화는 진행한다(예보는 받되, 실제 푸시 발송은 권한이 있어야 활성화).
@@ -131,7 +138,14 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
       ]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다.";
-      Alert.alert("동기화 실패", msg);
+      if (localSaved) {
+        Alert.alert(
+          "설정은 저장됐어요",
+          `휴대폰에는 저장했지만 서버 동기화에 실패했어요. 네트워크를 확인한 뒤 다시 저장해주세요.\n\n${msg}`
+        );
+      } else {
+        Alert.alert("설정 저장 실패", `휴대폰에 설정을 저장하지 못했어요. 다시 시도해주세요.\n\n${msg}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -140,7 +154,12 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Pressable onPress={onClose} hitSlop={12} style={styles.backButton}>
+        <Pressable
+          onPress={onClose}
+          hitSlop={12}
+          style={styles.backButton}
+          disabled={saving}
+        >
           <Text style={styles.back}>‹</Text>
         </Pressable>
         <Text style={styles.title}>설정</Text>

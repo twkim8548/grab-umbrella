@@ -1,0 +1,13 @@
+{
+  "cli": {
+    "version": ">= 19.1.0"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {
+      "autoIncrement": true
+    }
+  }
+}

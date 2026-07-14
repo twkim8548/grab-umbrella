@@ -11,18 +11,28 @@ import { Platform } from "react-native";
 
 // 현재 권한 상태. priming 표시 판단(undetermined)에 사용.
 export async function getNotificationPermissionStatus(): Promise<Notifications.PermissionStatus> {
-  const { status } = await Notifications.getPermissionsAsync();
-  return status;
+  try {
+    const { status } = await Notifications.getPermissionsAsync();
+    return status;
+  } catch {
+    // 무료 개인 서명처럼 알림 capability 를 쓸 수 없는 빌드에서도 앱 진입은 막지 않는다.
+    return "denied" as Notifications.PermissionStatus;
+  }
 }
 
 // 권한을 보장(필요 시 요청)하고 granted 여부 반환.
 // 이미 granted 면 요청 없이 true. denied 등에서 requestPermissionsAsync 는 iOS 에서
 // 시스템 팝업을 다시 띄우지 않으므로(이미 결정됨) 그대로 현재 상태를 반영한다.
 export async function ensureNotificationPermission(): Promise<boolean> {
-  const { status: existing } = await Notifications.getPermissionsAsync();
-  if (existing === "granted") return true;
-  const req = await Notifications.requestPermissionsAsync();
-  return req.status === "granted";
+  try {
+    const { status: existing } = await Notifications.getPermissionsAsync();
+    if (existing === "granted") return true;
+    const req = await Notifications.requestPermissionsAsync();
+    return req.status === "granted";
+  } catch {
+    // 알림 설정 실패는 예보/설정 동기화를 막는 치명 오류가 아니다.
+    return false;
+  }
 }
 
 // 식별 토큰을 반환. 권한 거부와 무관하게 항상 토큰을 돌려준다(메인 동작 보장).
@@ -34,14 +44,14 @@ export async function getPushToken(): Promise<string> {
     Constants.easConfig?.projectId;
 
   if (projectId) {
-    const { status } = await Notifications.getPermissionsAsync();
-    if (status === "granted") {
-      try {
+    try {
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status === "granted") {
         const token = await Notifications.getExpoPushTokenAsync({ projectId });
         return token.data;
-      } catch {
-        // 정식 토큰 실패 시 아래 dev 폴백으로.
       }
+    } catch {
+      // 권한 조회나 정식 토큰 발급 실패 시 아래 dev 폴백으로.
     }
   }
 

@@ -76,8 +76,12 @@ export default function App() {
 
   const handleAllow = async () => {
     // [알림 허용] 누른 그 시점에 실제 시스템 권한 요청.
-    await ensureNotificationPermission();
-    await finishPrimer();
+    // 무료 개인 서명 등에서 알림 capability 가 실패해도 앱 진입은 보장한다.
+    try {
+      await ensureNotificationPermission();
+    } finally {
+      await finishPrimer();
+    }
   };
 
   return (
