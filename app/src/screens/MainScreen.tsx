@@ -32,11 +32,13 @@ type DayWord = "오늘" | "내일";
 type SlotKey = "morning" | "evening";
 // 시트 식별: 어느 섹션(날짜)의 어느 슬롯이 열렸는가. null 이면 닫힘.
 type SheetTarget = { dayWord: DayWord; slotKey: SlotKey } | null;
+type UpdateStatus = "idle" | "updating" | "error";
 
 export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [sheet, setSheet] = useState<SheetTarget>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const loadRequestRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const hasReadyDataRef = useRef(false);
@@ -51,7 +53,12 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
     const isLatest = () =>
       requestId === loadRequestRef.current && !controller.signal.aborted;
     let displayedCache = false;
-    if (!silent) setState({ kind: "loading" });
+    if (!silent) {
+      setUpdateStatus("idle");
+      setState({ kind: "loading" });
+    } else if (hasReadyDataRef.current) {
+      setUpdateStatus("updating");
+    }
     try {
       const settings = await loadSettings();
       if (!isLatest()) return;
@@ -68,6 +75,7 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
         if (cachedForecast && isLatest()) {
           displayedCache = true;
           hasReadyDataRef.current = true;
+          setUpdateStatus("updating");
           setState({ kind: "ready", settings, forecast: cachedForecast });
         }
       }
@@ -92,6 +100,7 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       }
       if (isLatest()) {
         hasReadyDataRef.current = true;
+        setUpdateStatus("idle");
         setState({ kind: "ready", settings, forecast });
       }
     } catch (e) {
@@ -100,7 +109,10 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
       if (!isLatest()) return;
       // 이미 표시 중인 예보를 갱신하다 실패했다면 기존 화면을 유지한다. 일시적인
       // Lambda/KMA 지연 때문에 홈 전체가 에러 화면으로 바뀌지 않게 한다.
-      if ((silent && hasReadyDataRef.current) || displayedCache) return;
+      if ((silent && hasReadyDataRef.current) || displayedCache) {
+        setUpdateStatus("error");
+        return;
+      }
       // 404(NOT_REGISTERED): 서버에 미등록. 로컬 설정은 있으므로 "동기화 필요" 안내.
       // (네트워크/5xx 등 실제 오류만 재시도 가능한 error 로.)
       if (e instanceof Error && e.message === NOT_REGISTERED) {
@@ -182,7 +194,9 @@ export default function MainScreen({ onOpenSettings }: { onOpenSettings: () => v
           settings={state.settings}
           sheet={sheet}
           refreshing={refreshing}
+          updateStatus={updateStatus}
           onRefresh={onRefresh}
+          onRetry={() => void load(true)}
           onOpenSheet={(dayWord, slotKey) => setSheet({ dayWord, slotKey })}
           onCloseSheet={() => setSheet(null)}
         />
@@ -235,7 +249,9 @@ function ReadyView({
   settings,
   sheet,
   refreshing,
+  updateStatus,
   onRefresh,
+  onRetry,
   onOpenSheet,
   onCloseSheet,
 }: {
@@ -243,7 +259,9 @@ function ReadyView({
   settings: Settings;
   sheet: SheetTarget;
   refreshing: boolean;
+  updateStatus: UpdateStatus;
   onRefresh: () => void;
+  onRetry: () => void;
   onOpenSheet: (dayWord: DayWord, slotKey: SlotKey) => void;
   onCloseSheet: () => void;
 }) {
@@ -265,6 +283,20 @@ function ReadyView({
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#8E8E93" />
         }
       >
+        {updateStatus === "updating" ? (
+          <View style={styles.updateNotice}>
+            <ActivityIndicator size="small" />
+            <Text style={styles.updateNoticeText}>날씨 업데이트 중…</Text>
+          </View>
+        ) : updateStatus === "error" ? (
+          <View style={styles.updateNotice}>
+            <Text style={styles.updateErrorText}>최신 날씨를 불러오지 못했어요</Text>
+            <Pressable onPress={onRetry} hitSlop={8}>
+              <Text style={styles.retryText}>다시 시도</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {sections.map((dayWord) => (
           <DaySection
             key={dayWord}
@@ -390,6 +422,17 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: "#fff", fontSize: 17, fontWeight: "600" },
   readyContainer: { flex: 1 },
   scrollContent: { paddingTop: 8, paddingBottom: 24 },
+  updateNotice: {
+    minHeight: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    marginBottom: 12,
+  },
+  updateNoticeText: { fontSize: 13, color: "#8E8E93" },
+  updateErrorText: { fontSize: 13, color: "#8E8E93" },
+  retryText: { fontSize: 13, color: "#007AFF", fontWeight: "600" },
   source: { fontSize: 12, color: "#C7C7CC", textAlign: "center", marginTop: 24 },
   // 섹션: 날짜 헤더 + 결론 + 카드. 섹션 간 넉넉한 간격.
   section: { marginBottom: 28 },

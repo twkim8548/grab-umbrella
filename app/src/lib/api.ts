@@ -8,16 +8,60 @@ import type { ForecastResponse, Settings } from "./types";
 const BASE_URL: string =
   Constants.expoConfig?.extra?.apiBaseUrl ?? "http://192.168.0.79:8080";
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
+// 네트워크 요청 자체의 시간 제한과 화면 전환 등에 따른 호출자 취소를 구분한다.
+// 호출자 취소는 fetch 의 AbortError 를 그대로 전달하고, 시간 초과만 이 타입으로 바꿔
+// 화면에서 사용자에게 재시도 가능한 안내를 보여준다.
+export class ApiTimeoutError extends Error {
+  constructor() {
+    super("요청 시간이 초과됐어요. 네트워크 연결을 확인하고 다시 시도해주세요.");
+    this.name = "ApiTimeoutError";
+  }
+}
+
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit = {},
+  callerSignal?: AbortSignal
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+
+  if (callerSignal?.aborted) {
+    controller.abort();
+  } else {
+    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    if (!callerSignal?.aborted) {
+      timedOut = true;
+      controller.abort();
+    }
+  }, REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new ApiTimeoutError();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
 // POST /sync — 설정이 바뀔 때마다 호출. 주소를 올리면 서버가 지오코딩/격자 변환.
 export async function sync(
   pushToken: string,
   s: Settings,
   signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${BASE_URL}/sync`, {
+  const res = await fetchWithTimeout(`${BASE_URL}/sync`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    signal,
     body: JSON.stringify({
       push_token: pushToken,
       home_address: s.homeAddress,
@@ -27,7 +71,7 @@ export async function sync(
       commute_days: s.commuteDays,
       notifications_enabled: s.notificationsEnabled,
     }),
-  });
+  }, signal);
   if (res.ok) return;
 
   // 상태코드별 에러 메시지. 422(주소 못찾음)는 본문 텍스트를 그대로 노출.
@@ -57,7 +101,7 @@ export async function getForecast(
   const query = MOCK_FORECAST
     ? `mock=${encodeURIComponent(MOCK_FORECAST)}`
     : `push_token=${encodeURIComponent(pushToken)}`;
-  const res = await fetch(`${BASE_URL}/forecast?${query}`, { signal });
+  const res = await fetchWithTimeout(`${BASE_URL}/forecast?${query}`, {}, signal);
   if (res.status === 404) throw new Error(NOT_REGISTERED);
   if (!res.ok) throw new Error(`forecast failed: ${res.status}`);
   return (await res.json()) as ForecastResponse;
