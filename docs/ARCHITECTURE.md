@@ -19,12 +19,23 @@
 
 포트: `PORT` env, 기본 `8080`. 미들웨어: chi Logger, Recoverer.
 
+### 운영 배포 구조
+
+`template.yaml`을 기준으로 AWS SAM이 컨테이너 이미지 Lambda 두 개를 배포한다.
+
+- `grab-umbrella-api`: Lambda Web Adapter로 기존 Go HTTP 서버를 실행하고 Function URL로 `/healthz`, `/sync`, `/forecast`를 노출한다.
+- `grab-umbrella-cron`: `EventBridge Scheduler`의 `rate(10 minutes)` 이벤트를 받아 HTTP 서버 없이 `cronjob.Run`을 직접 실행한다.
+- 두 함수는 외부 Neon DB를 공유한다. API는 기동 시, cron은 각 실행 전에 내장 마이그레이션을 idempotent하게 적용한다.
+- Lambda 제한 시간은 60초, 메모리는 256MB, 아키텍처는 arm64이며 로그 보존 기간은 30일이다.
+
+운영 URL과 비밀값은 공개 문서에 기록하지 않는다.
+
 ### POST /sync
 
 앱이 설정 변경 시 호출. `internal/handler/handler.go`.
 
 **입력** (JSON):
-```json
+```jsonc
 {
   "push_token": "ExponentPushToken[...]",
   "home_address": "경기 용인시 수지구 ...",   // 도로명/지번 주소
@@ -37,7 +48,7 @@
 ```
 
 **처리**: 같은 push token에 저장된 주소와 비교해 변경된 주소만 카카오 지오코딩(위경도) → `grid.ToGrid`(LCC DFS 격자 nx,ny) 후 `devices` upsert. 신규 기기는 집·회사 양쪽을 변환한다.
-**에러**: 400(필수 누락), 422(주소 못 찾음, 본문에 사유), 500(upsert 실패).
+**에러**: 400(필수 누락), 422(주소 못 찾음, 본문에 사유), 500(기존 기기 조회 또는 upsert 실패).
 
 ### GET /forecast
 
@@ -72,6 +83,8 @@ type HourlyPoint struct { Time string; TempC int; PopPct int; PtyText string }
 2. 6시간 이내 → 초단기예보 우선. 실패/빈 슬롯이면 단기예보 폴백.
 3. 6시간 밖 → 처음부터 단기예보.
 4. 단기까지 실패 → `false`로 graceful null.
+
+집(출근)과 회사(퇴근)는 두 worker로 병렬 계산한다. 각 worker 안에서 오늘→내일은 순차 처리해 첫 조회가 채운 같은 격자·발표본 캐시를 재사용한다. 같은 cache miss의 동시 기상청 호출은 `singleflight`로 하나로 합치며, 전체 예보 조립에는 12초 제한을 둔다.
 
 ### Cron 푸시 (`cmd/cron`)
 
@@ -161,7 +174,11 @@ ALTER TABLE devices ADD COLUMN notifications_enabled BOOLEAN NOT NULL DEFAULT TR
 - **날짜 섹션 패러다임**: `pickSections`가 데이터로 섹션 결정 — 출근 전=오늘만, 출퇴근 사이=오늘+내일, 퇴근 후=내일만. 자세히는 [design-main-screen.md](./design-main-screen.md).
 - 각 섹션: 날짜 헤더 + 우산 결론(그 날 살아있는 슬롯 중 하나라도 needUmbrella) + 카드들. 결론 아래 **이유**(`buildSectionReason`: "퇴근길 19시부터 소나기")는 우산 필요할 때만.
 - 로드 상태: `loading / no-settings / sync-needed(404) / error / ready`.
+- **초기 설정 안정화**: 설정 화면은 저장 중 뒤로가기를 막고 로컬 저장→권한 확인→서버 동기화를 마친 뒤 닫힌다. 홈은 매 focus마다 설정을 다시 읽어 최초 설정 직후에도 이전 `no-settings` 상태가 남지 않는다.
+- **stale-while-refresh**: 설정 fingerprint와 KST 날짜가 맞는 3시간 이내 예보 캐시를 즉시 표시한 뒤 네트워크에서 최신 예보를 받아 교체한다. 캐시에서 오늘의 이미 지난 슬롯은 제거한다.
+- **갱신 상태**: 캐시 또는 기존 화면을 유지하며 `날씨 업데이트 중…`을 표시한다. 실패하면 기존 예보와 `최신 날씨를 불러오지 못했어요` 안내를 유지하고 사용자가 다시 시도할 수 있다.
 - **당겨서 새로고침**: `RefreshControl`. `load(silent=true)`로 화면 깜빡임 없이 데이터만 갱신.
+- 화면 전환이나 새 요청이 시작되면 이전 요청을 `AbortController`로 취소하고 request id로 늦은 응답을 폐기한다.
 
 ### CommuteCard (`src/components/CommuteCard.tsx`)
 
@@ -180,10 +197,25 @@ ALTER TABLE devices ADD COLUMN notifications_enabled BOOLEAN NOT NULL DEFAULT TR
 
 ### lib
 
-- `api.ts` — `BASE_URL = Constants.expoConfig?.extra?.apiBaseUrl ?? "http://192.168.0.79:8080"`. `sync`, `getForecast`(404→`NOT_REGISTERED`).
-- `push.ts` — `getPushToken`: EAS projectId + 권한 granted면 정식 `ExponentPushToken`, 아니면 `dev-<deviceId>` 폴백(항상 토큰 보장, forecast 호출용). `ensureNotificationPermission`, `getNotificationPermissionStatus` 분리.
+- `api.ts` — `BASE_URL = Constants.expoConfig?.extra?.apiBaseUrl ?? "http://192.168.0.79:8080"`. `sync`, `getForecast`(404→`NOT_REGISTERED`). 두 요청 모두 호출자 취소 신호와 독립적인 15초 제한을 결합하며, 시간 초과는 재시도 가능한 사용자 메시지로 구분한다.
+- `push.ts` — `getPushToken`: EAS projectId + 권한 granted면 정식 `ExponentPushToken`, 아니면 `dev-<deviceId>` 폴백(항상 토큰 보장, forecast 호출용). 앱 세션 동안 토큰을 캐시하고 동시 발급 요청을 하나로 합친다. 권한 허용 직후에만 dev 토큰을 강제 갱신한다. `ensureNotificationPermission`, `getNotificationPermissionStatus` 분리.
 - `types.ts` — `Settings`(로컬 주인), `SlotForecast`, `DayForecast`, `ForecastResponse`. `umbrellaReason: string` 포함.
 
 ### storage
 
 - `settings.ts` — AsyncStorage 키 `grab-umbrella:settings`, JSON. **설정의 주인**(DB는 사본).
+- `forecast.ts` — AsyncStorage 키 `grab-umbrella:forecast-cache`. 설정 fingerprint·KST 날짜·3시간 TTL·응답 스키마를 검증한 뒤 사용할 수 있는 캐시만 반환한다.
+
+## 검증 명령
+
+변경 영역에 따라 아래 정적 검증을 실행한다.
+
+```bash
+cd server
+go build ./...
+go vet ./...
+go test ./...
+
+cd ../app
+pnpm exec tsc --noEmit
+```

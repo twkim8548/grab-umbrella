@@ -1,4 +1,4 @@
-# CLAUDE.md — grab-umbrella
+# AGENTS.md — grab-umbrella
 
 이 레포에서 작업할 때 따를 규칙·컨텍스트. 세부는 `docs/`로 연결한다.
 
