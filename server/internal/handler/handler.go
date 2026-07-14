@@ -35,6 +35,8 @@ type syncRequest struct {
 	CommuteStart string `json:"commute_start"` // "0900"
 	CommuteEnd   string `json:"commute_end"`   // "1800"
 	CommuteDays  string `json:"commute_days"`  // "0111110" 일~토, 1=on. 빈값/형식오류면 평일 기본.
+	// 포인터로 필드 생략(구버전 앱)과 명시적인 false 를 구분한다.
+	NotificationsEnabled *bool `json:"notifications_enabled"`
 }
 
 // Sync 는 POST /sync. 주소→위경도(카카오)→격자 변환 후 devices upsert. spec §2·§3.
@@ -70,16 +72,17 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	wnx, wny := grid.ToGrid(workLat, workLng)
 
 	d := store.Device{
-		PushToken:    req.PushToken,
-		HomeNx:       hnx,
-		HomeNy:       hny,
-		WorkNx:       wnx,
-		WorkNy:       wny,
-		HomeAddress:  req.HomeAddress,
-		WorkAddress:  req.WorkAddress,
-		CommuteStart: req.CommuteStart,
-		CommuteEnd:   req.CommuteEnd,
-		CommuteDays:  normalizeDays(req.CommuteDays),
+		PushToken:            req.PushToken,
+		HomeNx:               hnx,
+		HomeNy:               hny,
+		WorkNx:               wnx,
+		WorkNy:               wny,
+		HomeAddress:          req.HomeAddress,
+		WorkAddress:          req.WorkAddress,
+		CommuteStart:         req.CommuteStart,
+		CommuteEnd:           req.CommuteEnd,
+		CommuteDays:          normalizeDays(req.CommuteDays),
+		NotificationsEnabled: notificationsEnabled(req.NotificationsEnabled),
 	}
 	if err := h.Store.Upsert(r.Context(), d); err != nil {
 		http.Error(w, "upsert failed", http.StatusInternalServerError)
@@ -216,6 +219,12 @@ func normalizeDays(s string) string {
 		}
 	}
 	return s
+}
+
+// notificationsEnabled 는 notifications_enabled 를 보내지 않는 구버전 앱을 계속
+// 알림 활성 상태로 취급한다. 새 앱이 false 를 명시하면 서버 발송을 비활성화한다.
+func notificationsEnabled(enabled *bool) bool {
+	return enabled == nil || *enabled
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

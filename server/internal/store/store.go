@@ -11,18 +11,19 @@ import (
 
 // Device 는 devices 테이블 한 줄에 대응한다.
 type Device struct {
-	PushToken           string
-	HomeNx, HomeNy      int
-	WorkNx, WorkNy      int
-	HomeAddress         string // 표시 보조용 원문 주소 (nullable)
-	WorkAddress         string
-	CommuteStart        string // "0900"
-	CommuteEnd          string // "1800"
-	CommuteDays         string // "0111110" 일~토, 1=on. 이 요일에만 발송.
-	LastMorningPushDate string // "YYYYMMDD"
-	LastEveningPushDate string
-	LastSyncedAt        time.Time
-	CreatedAt           time.Time
+	PushToken            string
+	HomeNx, HomeNy       int
+	WorkNx, WorkNy       int
+	HomeAddress          string // 표시 보조용 원문 주소 (nullable)
+	WorkAddress          string
+	CommuteStart         string // "0900"
+	CommuteEnd           string // "1800"
+	CommuteDays          string // "0111110" 일~토, 1=on. 이 요일에만 발송.
+	NotificationsEnabled bool   // 앱 내 알림 스위치. false 면 cron 발송 대상에서 제외.
+	LastMorningPushDate  string // "YYYYMMDD"
+	LastEveningPushDate  string
+	LastSyncedAt         time.Time
+	CreatedAt            time.Time
 }
 
 type Store struct {
@@ -45,8 +46,9 @@ func (s *Store) Upsert(ctx context.Context, d Device) error {
 	const q = `
 INSERT INTO devices (push_token, home_nx, home_ny, work_nx, work_ny,
                      home_address, work_address,
-                     commute_start, commute_end, commute_days, last_synced_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+                     commute_start, commute_end, commute_days, notifications_enabled,
+                     last_synced_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
 ON CONFLICT (push_token) DO UPDATE SET
     home_nx = EXCLUDED.home_nx,
     home_ny = EXCLUDED.home_ny,
@@ -57,22 +59,23 @@ ON CONFLICT (push_token) DO UPDATE SET
     commute_start = EXCLUDED.commute_start,
     commute_end = EXCLUDED.commute_end,
     commute_days = EXCLUDED.commute_days,
+    notifications_enabled = EXCLUDED.notifications_enabled,
     last_synced_at = now();`
 	_, err := s.pool.Exec(ctx, q, d.PushToken, d.HomeNx, d.HomeNy,
 		d.WorkNx, d.WorkNy, d.HomeAddress, d.WorkAddress,
-		d.CommuteStart, d.CommuteEnd, d.CommuteDays)
+		d.CommuteStart, d.CommuteEnd, d.CommuteDays, d.NotificationsEnabled)
 	return err
 }
 
 // GetByToken 은 /forecast 에서 push_token 으로 위치·시각 조회.
 func (s *Store) GetByToken(ctx context.Context, token string) (*Device, error) {
 	const q = `SELECT push_token, home_nx, home_ny, work_nx, work_ny,
-	                  commute_start, commute_end
+	                  commute_start, commute_end, notifications_enabled
 	           FROM devices WHERE push_token = $1;`
 	var d Device
 	err := s.pool.QueryRow(ctx, q, token).Scan(
 		&d.PushToken, &d.HomeNx, &d.HomeNy, &d.WorkNx, &d.WorkNy,
-		&d.CommuteStart, &d.CommuteEnd)
+		&d.CommuteStart, &d.CommuteEnd, &d.NotificationsEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -172,11 +175,12 @@ func (s *Store) DueDevices(ctx context.Context, now time.Time, leadMinutes int) 
 
 	// 아직 오늘 morning/evening 둘 다 발송한 기기는 후보에서 제외한다.
 	const q = `SELECT push_token, home_nx, home_ny, work_nx, work_ny,
-	                  commute_start, commute_end, commute_days,
+	                  commute_start, commute_end, commute_days, notifications_enabled,
 	                  COALESCE(last_morning_push_date, ''), COALESCE(last_evening_push_date, '')
 	           FROM devices
-	           WHERE last_morning_push_date IS DISTINCT FROM $1
-	              OR last_evening_push_date IS DISTINCT FROM $1;`
+	           WHERE notifications_enabled
+	             AND (last_morning_push_date IS DISTINCT FROM $1
+	               OR last_evening_push_date IS DISTINCT FROM $1);`
 
 	rows, err := s.pool.Query(ctx, q, today)
 	if err != nil {
@@ -191,7 +195,7 @@ func (s *Store) DueDevices(ctx context.Context, now time.Time, leadMinutes int) 
 	for rows.Next() {
 		var d Device
 		if err := rows.Scan(&d.PushToken, &d.HomeNx, &d.HomeNy, &d.WorkNx, &d.WorkNy,
-			&d.CommuteStart, &d.CommuteEnd, &d.CommuteDays,
+			&d.CommuteStart, &d.CommuteEnd, &d.CommuteDays, &d.NotificationsEnabled,
 			&d.LastMorningPushDate, &d.LastEveningPushDate); err != nil {
 			return nil, err
 		}

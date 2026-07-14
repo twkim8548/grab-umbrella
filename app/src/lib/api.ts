@@ -20,6 +20,7 @@ export async function sync(pushToken: string, s: Settings): Promise<void> {
       commute_start: s.commuteStart,
       commute_end: s.commuteEnd,
       commute_days: s.commuteDays,
+      notifications_enabled: s.notificationsEnabled,
     }),
   });
   if (res.ok) return;

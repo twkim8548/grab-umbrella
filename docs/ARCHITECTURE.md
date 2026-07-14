@@ -30,7 +30,9 @@
   "home_address": "경기 용인시 수지구 ...",   // 도로명/지번 주소
   "work_address": "서울 강남구 ...",
   "commute_start": "0730",                     // HHmm, KST
-  "commute_end": "1900"
+  "commute_end": "1900",
+  "commute_days": "0111110",                   // 일~토, 1=출근일
+  "notifications_enabled": true                 // false면 서버 푸시 대상 제외
 }
 ```
 
@@ -121,6 +123,12 @@ CREATE INDEX idx_devices_commute_end   ON devices (commute_end);
 -- 002_add_address.sql — 표시용 보조 주소 (격자가 실제 위치 식별자)
 ALTER TABLE devices ADD COLUMN home_address TEXT;
 ALTER TABLE devices ADD COLUMN work_address TEXT;
+
+-- 003_add_commute_days.sql — 선택한 출근일에만 발송
+ALTER TABLE devices ADD COLUMN commute_days TEXT NOT NULL DEFAULT '0111110';
+
+-- 004_add_notifications_enabled.sql — 앱 알림 스위치와 서버 발송 연동
+ALTER TABLE devices ADD COLUMN notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ```
 
 마이그레이션은 `psql` 없이 `cmd/migrate`(pgx)로 적용.
@@ -129,6 +137,7 @@ ALTER TABLE devices ADD COLUMN work_address TEXT;
 
 - `tickInterval = 10분`. `now+lead`의 타겟 시각이 commute 시각의 `[target, target+10분)` 구간에 들면 그 슬롯(morning/eveing)이 due.
 - `dueSlot`은 순수 함수(DB 불필요, 테스트 가능). `SlotMorning="morning"`, `SlotEvening="evening"`.
+- `notifications_enabled=false`인 기기는 SQL 후보 단계에서 제외한다.
 - morning이면 집 격자(home_nx/ny), evening이면 회사 격자(work_nx/ny)로 예보 조회.
 
 ### 개발 도구 (cmd/, 운영 배포 아님)
